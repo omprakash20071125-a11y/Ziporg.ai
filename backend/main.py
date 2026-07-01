@@ -8,24 +8,20 @@ from pydantic import BaseModel
 from phase1 import run_pipeline
 from fastapi.middleware.cors import CORSMiddleware
 
+
+
 app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
+        "https://ziporg-ai.vercel.app"
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
 )
-
 
 class PromptIn(BaseModel):
     prompt: str
