@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ziporg.ai — prompt in, app out</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #111318;
+    --surface: #191c22;
+    --surface-2: #20242c;
+    --border: #2a2f38;
+    --text: #edeef0;
+    --muted: #8a8f98;
+    --amber: #ffb020;
+    --amber-dim: #a9741a;
+    --teal: #4dd9c0;
+    --error: #ff6b5e;
+    --radius: 10px;
+  }
+
+  *{ box-sizing: border-box; }
+  html{ scroll-behavior: smooth; }
+  body{
+    margin:0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(255,176,32,0.08), transparent 40%),
+      radial-gradient(circle at 88% 10%, rgba(77,217,192,0.06), transparent 40%);
+  }
+
+  a{ color: inherit; }
+
+  ::selection{ background: var(--amber); color: #16130a; }
+
+  :focus-visible{
+    outline: 2px solid var(--amber);
+    outline-offset: 3px;
+  }
+
+  .wrap{
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  /* ---------- NAV ---------- */
+  header{
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    backdrop-filter: blur(10px);
+    background: rgba(17,19,24,0.75);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.wrap{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    height: 68px;
+  }
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size: 19px;
+    letter-spacing: -0.02em;
+    text-decoration:none;
+  }
+  .brand .dot{ color: var(--amber); }
+  .brand svg{ display:block; }
+
+  .nav-links{
+    display:flex;
+    gap: 28px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .nav-links a{ text-decoration:none; transition: color .15s ease; }
+  .nav-links a:hover{ color: var(--text); }
+
+  .nav-cta{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 14px;
+    border-radius: 7px;
+    text-decoration:none;
+    background: var(--surface);
+    transition: border-color .15s ease;
+  }
+  .nav-cta:hover{ border-color: var(--amber-dim); }
+
+  @media (max-width: 760px){ .nav-links{ display:none; } }
+
+  /* ---------- HERO ---------- */
+  .hero{
+    padding: 76px 0 40px;
+  }
+  .eyebrow{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--teal);
+    letter-spacing: 0.06em;
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+  .eyebrow::before{
+    content:'';
+    width: 7px; height: 7px;
+    background: var(--teal);
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px rgba(77,217,192,0.18);
+  }
+
+  h1{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: clamp(34px, 5vw, 58px);
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    margin: 0 0 18px;
+    max-width: 780px;
+  }
+  h1 .accent{ color: var(--amber); }
+
+  .sub{
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--muted);
+    max-width: 560px;
+    margin: 0 0 44px;
+  }
+
+  /* ---------- CONSOLE (main product) ---------- */
+  .console{
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 30px 60px -30px rgba(0,0,0,0.6);
+  }
+  @media (max-width: 860px){
+    .console{ grid-template-columns: 1fr; }
+  }
+
+  .console-pane{ display:flex; flex-direction:column; min-height: 340px; }
+  .pane-left{ border-right: 1px solid var(--border); }
+  @media (max-width: 860px){ .pane-left{ border-right:none; border-bottom: 1px solid var(--border); } }
+
+  .pane-head{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .pane-title{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .traffic{ display:flex; gap:6px; }
+  .traffic span{ width:9px; height:9px; border-radius:50%; background:#3a3f4a; }
+
+  .editor{
+    flex:1;
+    display:flex;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 14.5px;
+    line-height: 1.7;
+  }
+  .gutter{
+    padding: 18px 12px;
+    color: #454b56;
+    text-align:right;
+    user-select:none;
+    border-right: 1px solid var(--border);
+    background: rgba(255,255,255,0.01);
+  }
+  #prompt{
+    flex:1;
+    resize: none;
+    border:0;
+    outline:0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    padding: 18px 16px;
+    min-height: 220px;
+  }
+  #prompt::placeholder{ color: #4a5058; }
+
+  .pane-foot{
+    padding: 14px 16px;
+    border-top: 1px solid var(--border);
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--surface-2);
+  }
+  .char-count{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* zipper button */
+  .zip-btn{
+    position: relative;
+    appearance:none;
+    border:0;
+    cursor:pointer;
+    background: var(--amber);
+    color: #17130a;
+    font-family:'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 14.5px;
+    padding: 11px 20px 11px 16px;
+    border-radius: 7px;
+    display:flex;
+    align-items:center;
+    gap: 9px;
+    transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
+    box-shadow: 0 8px 18px -8px rgba(255,176,32,0.55);
+  }
+  .zip-btn:hover{ transform: translateY(-1px); }
+  .zip-btn:active{ transform: translateY(0); }
+  .zip-btn:disabled{
+    background: #3a3f4a;
+    color: var(--muted);
+    cursor: progress;
+    box-shadow: none;
+    transform:none;
+  }
+  .zip-btn svg{ width:16px; height:16px; flex-shrink:0; }
+
+  /* right pane: pipeline / output */
+  .pipeline{ flex:1; padding: 18px 16px; font-family:'JetBrains Mono', monospace; font-size: 13.5px; }
+  .stage{
+    display:flex;
+    align-items:flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    color: #565c67;
+    border-bottom: 1px dashed rgba(255,255,255,0.05);
+    transition: color .2s ease;
+  }
+  .stage:last-child{ border-bottom:0; }
+  .stage-num{
+    width: 20px; height:20px;
+    border-radius:50%;
+    border: 1px solid #333944;
+    display:flex; align-items:center; justify-content:center;
+    font-size: 10.5px;
+    flex-shrink:0;
+    margin-top: 1px;
+    transition: all .2s ease;
+  }
+  .stage.active{ color: var(--text); }
+  .stage.active .stage-num{ border-color: var(--amber); color: var(--amber); }
+  .stage.done{ color: var(--muted); }
+  .stage.done .stage-num{ background: var(--teal); border-color: var(--teal); color:#0d1a17; }
+  .stage-text small{ display:block; color: #565c67; font-size: 11.5px; margin-top:2px; }
+
+  .status-line{
+    font-size: 12px;
+    color: var(--muted);
+    padding-top: 8px;
+    min-height: 18px;
+  }
+  .status-line.error{ color: var(--error); }
+
+  /* zipper progress track — signature element */
+  .zipper-track{
+    position: relative;
+    height: 22px;
+    margin: 4px 16px 16px;
+    display:flex;
+    align-items:center;
+  }
+  .zipper-rail{
+    position:absolute;
+    left:0; right:0; top:50%;
+    height:2px;
+    background: var(--border);
+    transform: translateY(-50%);
+  }
+  .zipper-fill{
+    position:absolute;
+    left:0; top:50%;
+    height:2px;
+    background: var(--amber);
+    width:0%;
+    transform: translateY(-50%);
+    transition: width .4s ease;
+  }
+  .zipper-teeth{
+    position:absolute; inset:0;
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    padding: 0 1px;
+  }
+  .zipper-teeth i{
+    width:0; height:0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 7px solid var(--border);
+    opacity: .55;
+    transition: border-top-color .3s ease, opacity .3s ease;
+  }
+  .zipper-teeth i.zipped{ border-top-color: var(--amber); opacity: 1; }
+  .zipper-pull{
+    position:absolute;
+    top: 50%;
+    left: 0%;
+    width: 16px; height: 16px;
+    background: var(--surface-2);
+    border: 2px solid var(--amber);
+    border-radius: 4px 4px 4px 0;
+    transform: translate(-50%,-50%) rotate(45deg);
+    transition: left .4s ease;
+  }
+
+  .output-area{
+    border-top: 1px solid var(--border);
+    padding: 16px;
+    display:none;
+    flex-direction:column;
+    gap: 10px;
+  }
+  .output-area.show{ display:flex; }
+  .file-chip{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--teal);
+    background: rgba(77,217,192,0.08);
+    border: 1px solid rgba(77,217,192,0.25);
+    padding: 8px 12px;
+    border-radius: 6px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .download-btn{
+    appearance:none;
+    border: 1px solid var(--teal);
+    background: rgba(77,217,192,0.12);
+    color: var(--teal);
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600;
+    font-size: 14px;
+    padding: 11px 16px;
+    border-radius: 7px;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    transition: background .15s ease;
+    text-decoration:none;
+  }
+  .download-btn:hover{ background: rgba(77,217,192,0.2); }
+
+  .hint{
+    display:flex; flex-wrap:wrap; gap:8px;
+    margin-top: 18px;
+  }
+  .hint button{
+    appearance:none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family:'Inter', sans-serif;
+    font-size: 12.5px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    cursor:pointer;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  .hint button:hover{ border-color: var(--amber-dim); color: var(--text); }
+
+  /* ---------- ZIPPER DIVIDER (signature, section break) ---------- */
+  .divider{
+    height: 34px;
+    margin: 90px 0 0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position: relative;
+  }
+  .divider svg{ width: 100%; max-width: 1180px; height: 34px; }
+
+  /* ---------- HOW IT WORKS ---------- */
+  .how{ padding: 50px 0 90px; }
+  .how h2{
+    font-family:'Space Grotesk', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+  }
+  .how .sub{ margin-bottom: 46px; }
+
+  .steps{
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow:hidden;
+  }
+  @media (max-width: 760px){ .steps{ grid-template-columns: 1fr; } }
+  .step{
+    background: var(--surface);
+    padding: 28px 24px;
+  }
+  .step-num{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--amber);
+    margin-bottom: 14px;
+  }
+  .step h3{
+    font-family:'Space Grotesk', sans-serif;
+    font-size: 17px;
+    margin: 0 0 8px;
+  }
+  .step p{
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.6;
+    margin:0;
+  }
+
+  footer{
+    border-top: 1px solid var(--border);
+    padding: 26px 0 40px;
+  }
+  footer .wrap{
+    display:flex;
+    justify-content: space-between;
+    align-items:center;
+    gap: 16px;
+    font-size: 12.5px;
+    color: var(--muted);
+    font-family:'JetBrains Mono', monospace;
+  }
+  .gh-link{
+    display:flex;
+    align-items:center;
+    gap: 7px;
+    color: var(--muted);
+    text-decoration:none;
+    transition: color .15s ease;
+  }
+  .gh-link:hover{ color: var(--amber); }
+  @media (max-width: 560px){ footer .wrap{ flex-direction:column; gap:8px; text-align:center; } }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition: none !important; scroll-behavior: auto !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <nav class="wrap">
+    <a href="#top" class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <rect x="4" y="3" width="16" height="18" rx="2" stroke="#ffb020" stroke-width="1.6"/>
+        <path d="M11 3v18M11 6h2M11 9h-2M11 12h2M11 15h-2" stroke="#ffb020" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      ziporg<span class="dot">.ai</span>
+    </a>
+    <div class="nav-links">
+      <a href="#top">Console</a>
+      <a href="#how">How it works</a>
+    </div>
+    <a class="nav-cta" href="#top">$ generate</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero" id="top">
+    <div class="wrap">
+      <div class="eyebrow">PROMPT&nbsp;→&nbsp;PROJECT&nbsp;→&nbsp;PROJECT.ZIP</div>
+      <h1>Describe the app.<br>Download the <span class="accent">.zip</span>.</h1>
+      <p class="sub">Type what you want built. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor.</p>
+
+      <div class="console">
+        <div class="console-pane pane-left">
+          <div class="pane-head">
+            <span class="pane-title"><span class="traffic"><span></span><span></span><span></span></span>prompt.txt</span>
+            <span class="pane-title" id="charCount">0 chars</span>
+          </div>
+          <div class="editor">
+            <div class="gutter">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8</div>
+            <textarea id="prompt" placeholder="e.g. A habit tracker with a React frontend and a FastAPI backend, daily streaks, and a SQLite database."></textarea>
+          </div>
+          <div class="pane-foot">
+            <span class="char-count" id="charCountFoot">Ready when you are.</span>
+            <button class="zip-btn" id="generateBtn">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Generate app
+            </button>
+          </div>
+        </div>
+
+        <div class="console-pane pane-right">
+          <div class="pane-head">
+            <span class="pane-title"><span class="traffic"><span></span><span></span><span></span></span>pipeline</span>
+            <span class="pane-title" id="pipelineState">idle</span>
+          </div>
+          <div class="pipeline">
+            <div class="stage" data-stage="0">
+              <div class="stage-num">1</div>
+              <div class="stage-text">Reading your prompt<small>Parsing intent, stack, and constraints</small></div>
+            </div>
+            <div class="stage" data-stage="1">
+              <div class="stage-num">2</div>
+              <div class="stage-text">Planning the structure<small>Choosing files, routes, and modules</small></div>
+            </div>
+            <div class="stage" data-stage="2">
+              <div class="stage-num">3</div>
+              <div class="stage-text">Writing the files<small>Generating source, config, and assets</small></div>
+            </div>
+            <div class="stage" data-stage="3">
+              <div class="stage-num">4</div>
+              <div class="stage-text">Packaging the project<small>Zipping everything into one archive</small></div>
+            </div>
+          </div>
+
+          <div class="zipper-track" aria-hidden="true">
+            <div class="zipper-rail"></div>
+            <div class="zipper-fill" id="zipperFill"></div>
+            <div class="zipper-teeth" id="zipperTeeth"></div>
+            <div class="zipper-pull" id="zipperPull"></div>
+          </div>
+
+          <div class="wrap" style="padding: 0 16px 14px; margin:0; max-width:none;">
+            <div class="status-line" id="statusLine">Waiting for a prompt.</div>
+          </div>
+
+          <div class="output-area" id="outputArea">
+            <div class="file-chip" id="fileChip">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" stroke="currentColor" stroke-width="1.6"/><path d="M13 2v7h7" stroke="currentColor" stroke-width="1.6"/></svg>
+              project.zip is ready
+            </div>
+            <a class="download-btn" id="downloadBtn" href="#" download="project.zip">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Download project.zip
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="hint">
+        <button data-fill="A markdown-based note-taking app with tags, full-text search, and a dark mode toggle, built with vanilla JS.">Note-taking app</button>
+        <button data-fill="A REST API for a bookstore with CRUD endpoints for books and authors, built in FastAPI with SQLite.">Bookstore API</button>
+        <button data-fill="A single-page pomodoro timer with a settings panel for work/break lengths, using HTML, CSS and JS only.">Pomodoro timer</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider" aria-hidden="true">
+    <svg viewBox="0 0 1180 34" preserveAspectRatio="none">
+      <line x1="0" y1="17" x2="1180" y2="17" stroke="#2a2f38" stroke-width="1"/>
+    </svg>
+  </div>
+
+  <section class="how" id="how">
+    <div class="wrap">
+      <h2>Three stages, one archive.</h2>
+      <p class="sub">Every request runs the same pipeline under the hood — no dashboards, no project setup, no config to read first.</p>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">01 / prompt</div>
+          <h3>Say what you're building</h3>
+          <p>Plain language in, no schema or template required. Mention the stack if you care, or leave it to ziporg.ai to choose one.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">02 / generate</div>
+          <h3>Files get written</h3>
+          <p>The pipeline plans a structure and writes real, runnable source files — not a single snippet, a whole project.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">03 / zip</div>
+          <h3>One archive, one click</h3>
+          <p>Everything is packaged into project.zip. Unzip it, install dependencies, and run it locally.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>ziporg.ai</span>
+    <span>prompt in, app out</span>
+    <a href="https://github.com/omprakash20071125-a11y" target="_blank" rel="noopener" class="gh-link">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.74.5 12.02c0 5.03 3.29 9.29 7.86 10.8.57.1.78-.25.78-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.88-1.36-3.88-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.71 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.64 1.59.24 2.77.12 3.06.74.8 1.18 1.83 1.18 3.09 0 4.44-2.7 5.42-5.27 5.7.42.36.78 1.07.78 2.16 0 1.56-.01 2.82-.01 3.2 0 .3.2.66.79.55A10.53 10.53 0 0 0 23.5 12.02C23.5 5.74 18.27.5 12 .5Z"/></svg>
+      github.com/omprakash20071125-a11y
+    </a>
+  </div>
+</footer>
+
+<script>
+  const promptEl = document.getElementById('prompt');
+  const charCount = document.getElementById('charCount');
+  const charCountFoot = document.getElementById('charCountFoot');
+  const generateBtn = document.getElementById('generateBtn');
+  const statusLine = document.getElementById('statusLine');
+  const pipelineState = document.getElementById('pipelineState');
+  const stages = Array.from(document.querySelectorAll('.stage'));
+  const zipperFill = document.getElementById('zipperFill');
+  const zipperTeeth = document.getElementById('zipperTeeth');
+  const zipperPull = document.getElementById('zipperPull');
+  const outputArea = document.getElementById('outputArea');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+ 
+  const API_URL = 'https://ziporgai-production.up.railway.app/generate';
+
+  // build zipper teeth
+  const TOOTH_COUNT = 28;
+  for (let i = 0; i < TOOTH_COUNT; i++) {
+    const tooth = document.createElement('i');
+    zipperTeeth.appendChild(tooth);
+  }
+  const teeth = Array.from(zipperTeeth.children);
+
+  function setZipper(pct) {
+    zipperFill.style.width = pct + '%';
+    zipperPull.style.left = pct + '%';
+    const zippedCount = Math.round((pct / 100) * teeth.length);
+    teeth.forEach((t, i) => t.classList.toggle('zipped', i < zippedCount));
+  }
+  setZipper(0);
+
+  promptEl.addEventListener('input', () => {
+    const n = promptEl.value.length;
+    charCount.textContent = n + ' chars';
+    charCountFoot.textContent = n === 0 ? 'Ready when you are.' : n + ' characters typed';
+  });
+
+  document.querySelectorAll('.hint button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      promptEl.value = btn.dataset.fill;
+      promptEl.dispatchEvent(new Event('input'));
+      promptEl.focus();
+    });
+  });
+
+  function setStage(index, state) {
+    // state: 'active' | 'done'
+    const el = stages[index];
+    if (!el) return;
+    if (state === 'active') {
+      el.classList.add('active');
+      el.classList.remove('done');
+    } else if (state === 'done') {
+      el.classList.remove('active');
+      el.classList.add('done');
+    }
+  }
+  function resetStages() {
+    stages.forEach(s => s.classList.remove('active', 'done'));
+    setZipper(0);
+    outputArea.classList.remove('show');
+  }
+
+  let progressTimer = null;
+  let currentDownloadUrl = null;
+
+  async function generate() {
+    const prompt = promptEl.value.trim();
+    if (!prompt) {
+      statusLine.textContent = 'Write a prompt first — the pipeline needs something to build.';
+      statusLine.classList.add('error');
+      promptEl.focus();
+      return;
+    }
+    const apiUrl = API_URL;
+
+    resetStages();
+    statusLine.classList.remove('error');
+    generateBtn.disabled = true;
+    pipelineState.textContent = 'running';
+    outputArea.classList.remove('show');
+
+    const stageMessages = [
+      'Reading your prompt…',
+      'Planning the structure…',
+      'Writing the files…',
+      'Packaging the project…'
+    ];
+
+    let stageIndex = 0;
+    setStage(0, 'active');
+    statusLine.textContent = stageMessages[0];
+    setZipper(6);
+
+    // advance through the visible stages while the request is in flight;
+    // hold on the last stage until the response actually arrives
+    progressTimer = setInterval(() => {
+      if (stageIndex < 3) {
+        setStage(stageIndex, 'done');
+        stageIndex += 1;
+        setStage(stageIndex, 'active');
+        statusLine.textContent = stageMessages[stageIndex];
+        setZipper(6 + stageIndex * 28);
+      }
+    }, 1400);
+
+    try {
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+
+      clearInterval(progressTimer);
+
+      if (!res.ok) {
+        let detail = 'Request failed with status ' + res.status + '.';
+        try {
+          const errJson = await res.json();
+          if (errJson && errJson.detail) detail = errJson.detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      currentDownloadUrl = url;
+
+      stages.forEach((_, i) => setStage(i, 'done'));
+      setZipper(100);
+      pipelineState.textContent = 'done';
+      statusLine.textContent = 'Build finished. Your project is ready to download.';
+
+      downloadBtn.href = url;
+      downloadBtn.setAttribute('download', 'project.zip');
+      outputArea.classList.add('show');
+
+    } catch (err) {
+      clearInterval(progressTimer);
+      pipelineState.textContent = 'failed';
+      statusLine.classList.add('error');
+      statusLine.textContent = 'Build failed: ' + err.message + ' — check the API endpoint and try again.';
+      const activeStage = stages.find(s => s.classList.contains('active'));
+      if (activeStage) { activeStage.classList.remove('active'); }
+    } finally {
+      generateBtn.disabled = false;
+    }
+  }
+
+  generateBtn.addEventListener('click', generate);
+  promptEl.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') generate();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    // let the browser's own download navigation fire first,
+    // then bring the console back to its original, idle state
+    setTimeout(() => {
+      resetStages();
+      pipelineState.textContent = 'idle';
+      statusLine.classList.remove('error');
+      statusLine.textContent = 'Waiting for a prompt.';
+      if (currentDownloadUrl) {
+        URL.revokeObjectURL(currentDownloadUrl);
+        currentDownloadUrl = null;
+      }
+    }, 150);
+  });
+</script>
+
+</body>
+</html>
