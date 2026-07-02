@@ -36,6 +36,7 @@ Give it a prompt like *"Build me a personal portfolio website with HTML, CSS and
 | 🤖 | Google Gemini integration |
 | 🌐 | Simple, lightweight web interface |
 | 📥 | One-click project download |
+| 🧩 | Prompt refinement for vague/underspecified requests |
 
 ---
 
@@ -99,8 +100,9 @@ ziporg-ai/
 │   ├── .gitignore
 │   ├── main.py
 │   ├── phase1.py
+│   ├── phase2.py
+│   ├── phase2_planner.py
 │   ├── requirements.txt
-│  
 │
 ├── frontend/
 │   └── index.html
@@ -201,17 +203,25 @@ Returns a downloadable `project.zip` containing the generated codebase.
 
 ## 🗺️ Roadmap
 
-**Phase 1 — Current**
+**Phase 1 — Complete**
 - Prompt-to-project generation
 - Multi-file, context-aware code output
 - ZIP packaging & download
 - FastAPI + LangGraph pipeline
 
-**Phase 2 — In Progress**
+**Phase 2 — Complete**
 - Prompt query optimization — refine and clarify vague/underspecified prompts with the user before generation
 - Support for cloning/replicating real-world web app structures and UX patterns from a description
 - Streaming generation with live progress updates
 - Project templates and reusable scaffolds
+
+**Phase 3 — In Progress**
+- Image analysis — accept an uploaded image (e.g. a design mockup, screenshot, or reference UI) and let the AI planner interpret it as part of the generation input
+- Image-to-code assistance — pull layout, color, and component cues from an analyzed image to inform the generated frontend
+- Improved web-page content reading — stronger extraction and understanding of an existing site's structure, text, and layout when a URL or page is provided as reference
+- Reference-aware regeneration — use the read page content to keep generated pages consistent with the source's tone, sections, and information architecture
+- Basic accessibility pass on generated pages (alt text for images, semantic HTML checks)
+- Prompt history within a session, so follow-up prompts can refine the same project instead of starting over
 
 **Future**
 - User authentication
