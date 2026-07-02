@@ -5,7 +5,7 @@ import shutil
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from phase1 import run_pipeline
+from phase2 import run_pipeline
 from fastapi.middleware.cors import CORSMiddleware
 
 
