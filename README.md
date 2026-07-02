@@ -1,331 +1,264 @@
+<div align="center">
+
 # 🚀 ziporg.ai
 
 ### Prompt In. Project Out.
 
-Generate complete, production-ready software projects from a single prompt.
+AI-powered software generation platform that turns a single natural-language prompt into a complete, downloadable, production-ready codebase.
+<img width="1450" height="832" alt="image" src="https://github.com/user-attachments/assets/84395a0f-4f62-4d8a-9f84-36db35e5244f" />
+<img width="1450" height="675" alt="image" src="https://github.com/user-attachments/assets/0eb19f8b-1a70-40ef-8653-b9687bb93e21" />
 
-**ziporg.ai** is an AI-powered software generation platform that transforms natural language prompts into complete, downloadable project codebases. Instead of generating isolated code snippets, ziporg.ai plans the project architecture, generates every required source file, packages everything into a ZIP archive, and delivers a ready-to-run application.
+
+
+**[🔗 Live Demo](https://ziporg-ai.vercel.app)**
+
+</div>
+
+---
+
+## 📖 Overview
+
+Most AI coding tools generate isolated snippets that still need to be wired together by hand. **ziporg.ai** takes a different approach: it plans an entire project's architecture, generates every required file with awareness of the full codebase, packages the result into a ZIP archive, and hands back something you can actually run.
+
+Give it a prompt like *"Build me a personal portfolio website with HTML, CSS and JavaScript"* and get back a structured, ready-to-run project — not a fragment.
 
 ---
 
 ## ✨ Features
 
-* 🧠 AI-powered project planning
-* 📂 Multi-file code generation
-* 📦 Automatic ZIP packaging
-* ⚡ FastAPI backend
-* 🕸️ LangGraph workflow orchestration
-* 🤖 Google Gemini integration
-* 🌐 Simple web interface
-* 📥 One-click project download
+| | |
+|---|---|
+| 🧠 | AI-powered project planning |
+| 📂 | Multi-file, context-aware code generation |
+| 📦 | Automatic ZIP packaging |
+| ⚡ | FastAPI backend |
+| 🕸️ | LangGraph workflow orchestration |
+| 🤖 | Google Gemini integration |
+| 🌐 | Simple, lightweight web interface |
+| 📥 | One-click project download |
 
 ---
 
-# 🏗️ Architecture
+## 🏗️ Architecture
 
 ```
-                User Prompt
-                     │
-                     ▼
-            Prompt Planner (LLM)
-                     │
-                     ▼
-         Project File Architecture
-                     │
-                     ▼
-        Sequential File Generation
-                     │
-                     ▼
-          Complete Project Folder
-                     │
-                     ▼
-             ZIP Packaging
-                     │
-                     ▼
-           Download project.zip
+                    User Prompt
+                         │
+                         ▼
+                Prompt Planner (LLM)
+                         │
+                         ▼
+             Project File Architecture
+                         │
+                         ▼
+            Sequential File Generation
+                         │
+                         ▼
+              Complete Project Folder
+                         │
+                         ▼
+                  ZIP Packaging
+                         │
+                         ▼
+               Download project.zip
+```
+
+**Workflow graph (LangGraph):**
+
+```
+START → Planner Node → Code Generator Node → END
 ```
 
 ---
 
-# ⚙️ Tech Stack
+## ⚙️ Tech Stack
 
-## Backend
+**Backend**
+- Python
+- FastAPI
+- LangGraph
+- LangChain
+- Google Gemini 2.5 Flash
+- Pydantic
 
-* Python
-* FastAPI
-* LangGraph
-* LangChain
-* Google Gemini 2.5 Flash
-* Pydantic
+**Frontend**
+- HTML
+- CSS
+- JavaScript
 
-## Frontend
-
-* HTML
-* CSS
-* JavaScript
-
-## AI
-
-* Google Gemini API
+**AI**
+- Google Gemini API
 
 ---
 
-# 📁 Project Structure
+## 📁 Project Structure
 
 ```
 ziporg-ai/
-
 ├── backend/
+│   ├── .gitignore
 │   ├── main.py
 │   ├── phase1.py
 │   ├── requirements.txt
-│   ├── .env
-│   └── ...
+│  
 │
 ├── frontend/
-│   ├── index.html
-│   ├── styles.css
-│   └── script.js
+│   └── index.html
 │
 └── README.md
 ```
 
 ---
 
-# 🚀 How It Works
+## 🚀 How It Works
 
-### 1. User enters a prompt
+1. **User enters a prompt**
+   ```
+   Build me a personal portfolio website with HTML, CSS and JavaScript.
+   ```
 
-Example:
+2. **AI Planner** analyzes the request and determines:
+   - Project type
+   - Required files
+   - Programming language(s)
+   - Dependencies
+   - Generation order
 
-```
-Build me a personal portfolio website with HTML, CSS and JavaScript.
-```
+3. **Code Generation** — each file is generated individually while the model stays aware of the overall project structure, producing consistent, connected output instead of disjointed snippets.
 
----
+4. **Packaging** — the finished project is automatically zipped.
 
-### 2. AI Planner
-
-The planner analyzes the request and determines:
-
-* Project type
-* Required files
-* Programming language
-* Dependencies
-* Generation order
+5. **Download** — the user receives a ready-to-run `project.zip`.
 
 ---
 
-### 3. Code Generation
-
-Each file is generated individually while maintaining awareness of the entire project structure.
-
-This produces consistent multi-file applications instead of disconnected code snippets.
-
----
-
-### 4. Packaging
-
-The generated project is automatically packaged into a ZIP archive.
-
----
-
-### 5. Download
-
-The user downloads a ready-to-run project.
-
----
-
-# 📦 Installation
-
-Clone the repository.
+## 📦 Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ziporg-ai.git
-```
-
-Move into the project.
-
-```bash
+# Clone the repository
+git clone https://github.com/omprakash20071125-a11y/ziporg-ai.git
 cd ziporg-ai
-```
 
-Create a virtual environment.
-
-### macOS/Linux
-
-```bash
+# Create a virtual environment
 python3 -m venv venv
+
+# macOS/Linux
 source venv/bin/activate
-```
 
-### Windows
-
-```bash
-python -m venv venv
+# Windows
 venv\Scripts\activate
-```
 
-Install dependencies.
-
-```bash
-pip install -r requirements.txt
+# Install dependencies
+pip install -r backend/requirements.txt
 ```
 
 ---
 
-# 🔑 Environment Variables
+## 🔑 Environment Variables
 
-Create a `.env` file inside the backend folder.
+Create a `.env` file inside `backend/` (this file is git-ignored and should never be committed):
 
-```
+```env
 GOOGLE_API_KEY=YOUR_GEMINI_API_KEY
 ```
 
 ---
 
-# ▶️ Running the Backend
+## ▶️ Running the Backend
 
 ```bash
+cd backend
 uvicorn main:app --reload
 ```
 
-The API will start at
+- API: `http://127.0.0.1:8000`
+- Swagger docs: `http://127.0.0.1:8000/docs`
 
-```
-http://127.0.0.1:8000
-```
+## 🌐 Running the Frontend
 
-Swagger Documentation
-
-```
-http://127.0.0.1:8000/docs
-```
+Open `frontend/index.html` with a local server (e.g. VS Code Live Server), or use the hosted version at the [live demo](https://ziporg-ai.vercel.app).
 
 ---
 
-# 🌐 Running the Frontend
+## 📡 API Reference
 
-Open the frontend using a local web server such as VS Code Live Server.
+### Generate Project
 
-Alternatively, after deployment, access it through your hosted URL.
+`POST /generate`
 
----
-
-# 📡 API Endpoint
-
-## Generate Project
-
-**POST**
-
-```
-/generate
-```
-
-Request
-
+**Request**
 ```json
 {
   "prompt": "Build me a calculator application."
 }
 ```
 
-Response
+**Response**
 
-```
-project.zip
-```
+Returns a downloadable `project.zip` containing the generated codebase.
 
 ---
 
-# 🧠 Workflow
+## 🗺️ Roadmap
 
-```
-START
-   │
-   ▼
-Planner Node
-   │
-   ▼
-Code Generator Node
-   │
-   ▼
-ZIP Builder
-   │
-   ▼
-END
-```
+**Phase 1 — Current**
+- Prompt-to-project generation
+- Multi-file, context-aware code output
+- ZIP packaging & download
+- FastAPI + LangGraph pipeline
 
----
+**Phase 2 — In Progress**
+- Prompt query optimization — refine and clarify vague/underspecified prompts with the user before generation
+- Support for cloning/replicating real-world web app structures and UX patterns from a description
+- Streaming generation with live progress updates
+- Project templates and reusable scaffolds
 
-# 📷 Screenshots
-
-> Add screenshots of your application here.
-
-Suggested screenshots:
-
-* Landing Page
-* Prompt Input
-* Generation Progress
-* Download Button
-* Generated Project
+**Future**
+- User authentication
+- Project history & versioning
+- Cloud storage for generated projects
+- Stripe subscription / usage tiers
+- Team workspaces
+- Custom/pluggable AI models
+- Docker export
+- Git repository export
+- One-click deployment
 
 ---
 
-# 🔮 Future Improvements
+## 🤝 Contributing
 
-* User Authentication
-* Project History
-* Cloud Storage
-* Stripe Subscription
-* Team Workspaces
-* Custom AI Models
-* Project Templates
-* Streaming Generation
-* Docker Export
-* Git Repository Export
-* One-click Deployment
-* Version History
+Contributions are welcome. If you'd like to improve ziporg.ai, please open an issue or submit a pull request.
 
 ---
 
-# 🤝 Contributing
+## 📜 License
 
-Contributions are welcome.
-
-If you would like to improve ziporg.ai, feel free to open an issue or submit a pull request.
+Licensed under the [MIT License](LICENSE).
 
 ---
 
-# 📜 License
-
-This project is licensed under the MIT License.
-
----
-
-# ⭐ Support
-
-If you found this project helpful, consider giving it a ⭐ on GitHub.
-
-It helps the project reach more developers and motivates future development.
-
----
-
-# 👨‍💻 Author
+## 👨‍💻 Author
 
 **Om Prakash Gupta**
+AI Engineer · Full-Stack AI Developer
 
-AI Engineer | Full-Stack AI Developer
-
-GitHub:
-https://github.com/omprakash20071125-a11y
+[GitHub](https://github.com/omprakash20071125-a11y)
 
 ---
 
-## 💡 Vision
+## ⭐ Support
 
-The long-term vision of **ziporg.ai** is to become an AI software engineer capable of transforming ideas into production-ready applications.
+If this project helped you, consider giving it a star on GitHub — it helps others discover it and supports continued development.
 
-Rather than generating isolated code snippets, the platform focuses on producing complete, structured, maintainable software projects that developers can immediately run, extend, and deploy.
+---
+
+<div align="center">
+
+### 💡 Vision
+
+The long-term vision of **ziporg.ai** is to become an AI software engineer capable of turning ideas into production-ready applications — not isolated snippets, but complete, structured, maintainable projects developers can run, extend, and deploy immediately.
 
 **Prompt In. Project Out.**
+
+</div>
