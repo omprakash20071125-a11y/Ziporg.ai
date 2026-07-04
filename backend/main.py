@@ -2,37 +2,60 @@ import os
 import uuid
 import tempfile
 import shutil
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from phase2 import run_pipeline
 from fastapi.middleware.cors import CORSMiddleware
 
-
+from phase3 import run_pipeline
 
 app = FastAPI()
-
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://ziporg-ai.vercel.app"
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
-
-class PromptIn(BaseModel):
-    prompt: str
 
 
 @app.post("/generate")
-def generate(body: PromptIn):
+def generate(
+    prompt: str = Form(...),
+    reference_image: Optional[UploadFile] = File(None),
+):
+    reference_image_path = ""
+    image_tmp_dir = None
+
+    # Save the uploaded reference image to disk, since run_pipeline expects a path
+    if reference_image is not None:
+        image_tmp_dir = tempfile.mkdtemp()
+        ext = os.path.splitext(reference_image.filename or "")[1] or ".png"
+        reference_image_path = os.path.join(image_tmp_dir, f"reference{ext}")
+        try:
+            with open(reference_image_path, "wb") as f:
+                shutil.copyfileobj(reference_image.file, f)
+        except Exception as e:
+            shutil.rmtree(image_tmp_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Failed to save reference image: {e}")
+
     try:
-        file_code = run_pipeline(body.prompt)
+        file_code = run_pipeline(prompt, reference_image_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+    finally:
+        if image_tmp_dir:
+            shutil.rmtree(image_tmp_dir, ignore_errors=True)
 
     if not file_code:
         raise HTTPException(status_code=500, detail="No files were generated")
