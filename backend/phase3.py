@@ -137,7 +137,7 @@ def query_optimizer(state: State) -> State:
     )
     chain = prompt | model | StrOutputParser()
     response = chain.invoke({'query': state['prompt']})
-    time.sleep(4)
+    print("Finished query optimizer")
     return {'new_request': response}
 
 
@@ -161,6 +161,7 @@ def get_image_schema(state: State) -> State:
 
     structured_model = model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
+    print("Finished image analysis")
     return {'overall_image_design': result}
 
 
@@ -228,7 +229,6 @@ Respond with only "true" or "false".""",
     )
     chain = prompt | model.with_structured_output(research_need)
     response = chain.invoke({'query': state['new_request']})
-    time.sleep(4)
     return {'research_needed': response.research_needed}
 
 
@@ -365,7 +365,7 @@ design_schema: {image_description}""",
         'research_context': state['research_context'],
         'image_description': state['image_description'],
     })
-    time.sleep(4)
+    print("Finished planner")
     return {'fileplans': response}
 
 
@@ -518,7 +518,6 @@ def code_generator(state: State) -> State:
         })
 
         code_for_each_file[f.filename] = response
-        time.sleep(2)
 
     return {'file_code': code_for_each_file}
 
