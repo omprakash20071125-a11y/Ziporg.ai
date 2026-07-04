@@ -35,9 +35,12 @@ app.add_middleware(
         "http://localhost:8080",
         "http://127.0.0.1:8080",
 
-        # Add your deployed frontend
-        "https://your-vercel-app.vercel.app",
+        # Actual deployed frontend
+        "https://ziporg-ai.vercel.app",
     ],
+    # Also match any preview deployments for this project,
+    # e.g. https://ziporg-ai-<hash>-<team>.vercel.app
+    allow_origin_regex=r"https://ziporg-ai.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
