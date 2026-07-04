@@ -49,6 +49,54 @@
     padding: 0 28px;
   }
 
+  /* film-grain texture, applied over everything, very low opacity */
+  body::after{
+    content:'';
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    pointer-events: none;
+    opacity: 0.035;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+
+  /* ---------- ANNOUNCEMENT STRIP ---------- */
+  .announce{
+    position: relative;
+    z-index: 21;
+    background: linear-gradient(90deg, rgba(255,176,32,0.12), rgba(77,217,192,0.08));
+    border-bottom: 1px solid var(--border);
+  }
+  .announce .wrap{
+    display:flex;
+    align-items:center;
+    justify-content: center;
+    gap: 10px;
+    padding: 9px 28px;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--text);
+    text-align:center;
+  }
+  .announce strong{ color: var(--amber); font-weight: 600; }
+  .announce .close-announce{
+    position:absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    appearance:none;
+    border:0;
+    background:transparent;
+    color: var(--muted);
+    cursor:pointer;
+    font-size: 15px;
+    line-height:1;
+    padding: 4px;
+  }
+  .announce .close-announce:hover{ color: var(--text); }
+  .announce.hide{ display:none; }
+
   /* ---------- NAV ---------- */
   header{
     position: sticky;
@@ -75,7 +123,21 @@
     text-decoration:none;
   }
   .brand .dot{ color: var(--amber); }
-  .brand svg{ display:block; }
+  .brand .brand-name{ white-space: nowrap; }
+  .brand svg{ display:block; filter: drop-shadow(0 0 6px rgba(255,176,32,0.45)); }
+  .version-pill{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--teal);
+    background: rgba(77,217,192,0.1);
+    border: 1px solid rgba(77,217,192,0.3);
+    padding: 2px 7px;
+    border-radius: 999px;
+    letter-spacing: 0.03em;
+    margin-left: 2px;
+    transform: translateY(-1px);
+  }
 
   .nav-links{
     display:flex;
@@ -100,6 +162,21 @@
   .nav-cta:hover{ border-color: var(--amber-dim); }
 
   @media (max-width: 760px){ .nav-links{ display:none; } }
+
+  /* ---------- entrance animations ---------- */
+  @keyframes fadeUp{
+    from{ opacity:0; transform: translateY(14px); }
+    to{ opacity:1; transform: translateY(0); }
+  }
+  .reveal{
+    opacity: 0;
+    animation: fadeUp .6s cubic-bezier(.2,.7,.3,1) forwards;
+  }
+  .reveal-1{ animation-delay: .02s; }
+  .reveal-2{ animation-delay: .10s; }
+  .reveal-3{ animation-delay: .18s; }
+  .reveal-4{ animation-delay: .28s; }
+  .reveal-5{ animation-delay: .36s; }
 
   /* ---------- HERO ---------- */
   .hero{
@@ -126,13 +203,18 @@
   h1{
     font-family:'Space Grotesk', sans-serif;
     font-weight: 700;
-    font-size: clamp(34px, 5vw, 58px);
-    line-height: 1.04;
-    letter-spacing: -0.025em;
+    font-size: clamp(36px, 5.2vw, 62px);
+    line-height: 1.03;
+    letter-spacing: -0.028em;
     margin: 0 0 18px;
     max-width: 780px;
   }
-  h1 .accent{ color: var(--amber); }
+  h1 .accent{
+    background: linear-gradient(100deg, var(--amber), #ffd27a 50%, var(--amber));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 
   .sub{
     font-size: 17px;
@@ -143,22 +225,26 @@
   }
 
   /* ---------- CONSOLE (main product) ---------- */
+  .console-frame{
+    padding: 1px;
+    border-radius: calc(var(--radius) + 2px);
+    background: linear-gradient(135deg, rgba(255,176,32,0.55), rgba(77,217,192,0.35) 45%, rgba(255,176,32,0.12) 80%);
+    box-shadow: 0 40px 80px -35px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,176,32,0.05);
+  }
   .console{
     display: grid;
     grid-template-columns: 1.15fr 0.85fr;
     gap: 0;
-    border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
     background: var(--surface);
-    box-shadow: 0 30px 60px -30px rgba(0,0,0,0.6);
   }
   @media (max-width: 860px){
     .console{ grid-template-columns: 1fr; }
   }
 
   .console-pane{ display:flex; flex-direction:column; min-height: 340px; }
-  .pane-left{ border-right: 1px solid var(--border); }
+  .pane-left{ border-right: 1px solid var(--border); position: relative; }
   @media (max-width: 860px){ .pane-left{ border-right:none; border-bottom: 1px solid var(--border); } }
 
   .pane-head{
@@ -204,9 +290,76 @@
     color: var(--text);
     font: inherit;
     padding: 18px 16px;
-    min-height: 220px;
+    min-height: 190px;
   }
   #prompt::placeholder{ color: #4a5058; }
+
+  /* ---------- reference image attachment ---------- */
+  .attach-row{
+    display:none;
+    align-items:center;
+    gap: 10px;
+    padding: 0 16px 14px;
+  }
+  .attach-row.show{ display:flex; }
+  .attach-chip{
+    display:flex;
+    align-items:center;
+    gap: 9px;
+    padding: 5px 10px 5px 5px;
+    background: rgba(255,176,32,0.08);
+    border: 1px solid rgba(255,176,32,0.28);
+    border-radius: 7px;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text);
+    max-width: 100%;
+  }
+  .attach-chip img{
+    width: 26px; height: 26px;
+    object-fit: cover;
+    border-radius: 5px;
+    flex-shrink:0;
+    display:block;
+  }
+  .attach-chip .attach-name{
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    max-width: 200px;
+  }
+  .attach-chip .attach-size{ color: var(--muted); flex-shrink:0; }
+  .attach-remove{
+    appearance:none;
+    border:0;
+    background: transparent;
+    color: var(--muted);
+    cursor:pointer;
+    font-family: inherit;
+    font-size: 15px;
+    line-height:1;
+    padding: 2px 4px;
+    margin-left: 2px;
+    border-radius: 4px;
+    flex-shrink:0;
+  }
+  .attach-remove:hover{ color: var(--error); }
+
+  .drop-overlay{
+    position:absolute;
+    inset:0;
+    z-index: 6;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    background: rgba(17,19,24,0.94);
+    border: 2px dashed var(--amber);
+    font-family:'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--amber);
+  }
+  .drop-overlay.show{ display:flex; }
 
   .pane-foot{
     padding: 14px 16px;
@@ -222,6 +375,29 @@
     font-size: 12px;
     color: var(--muted);
   }
+  .foot-actions{
+    display:flex;
+    align-items:center;
+    gap: 8px;
+  }
+
+  .icon-btn{
+    appearance:none;
+    cursor:pointer;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 38px; height: 38px;
+    border-radius: 7px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+    transition: border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .icon-btn:hover{ border-color: var(--amber-dim); color: var(--text); }
+  .icon-btn.active{ border-color: var(--amber); color: var(--amber); background: rgba(255,176,32,0.08); }
+  .icon-btn svg{ width:17px; height:17px; }
 
   /* zipper button */
   .zip-btn{
@@ -241,7 +417,18 @@
     gap: 9px;
     transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
     box-shadow: 0 8px 18px -8px rgba(255,176,32,0.55);
+    white-space: nowrap;
+    overflow: hidden;
   }
+  .zip-btn::before{
+    content:'';
+    position:absolute;
+    inset: 0;
+    background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.35) 48%, transparent 66%);
+    transform: translateX(-120%);
+    transition: transform .5s ease;
+  }
+  .zip-btn:hover::before{ transform: translateX(120%); }
   .zip-btn:hover{ transform: translateY(-1px); }
   .zip-btn:active{ transform: translateY(0); }
   .zip-btn:disabled{
@@ -251,7 +438,9 @@
     box-shadow: none;
     transform:none;
   }
-  .zip-btn svg{ width:16px; height:16px; flex-shrink:0; }
+  .zip-btn:disabled::before{ display:none; }
+  .zip-btn svg{ width:16px; height:16px; flex-shrink:0; position:relative; }
+  .zip-btn span, .zip-btn{ position: relative; }
 
   /* right pane: pipeline / output */
   .pipeline{ flex:1; padding: 18px 16px; font-family:'JetBrains Mono', monospace; font-size: 13.5px; }
@@ -429,6 +618,11 @@
   .step{
     background: var(--surface);
     padding: 28px 24px;
+    transition: background .18s ease, transform .18s ease;
+  }
+  .step:hover{
+    background: var(--surface-2);
+    transform: translateY(-3px);
   }
   .step-num{
     font-family:'JetBrains Mono', monospace;
@@ -473,11 +667,19 @@
   @media (max-width: 560px){ footer .wrap{ flex-direction:column; gap:8px; text-align:center; } }
 
   @media (prefers-reduced-motion: reduce){
-    *{ transition: none !important; scroll-behavior: auto !important; }
+    *{ transition: none !important; scroll-behavior: auto !important; animation: none !important; }
+    .reveal{ opacity: 1; transform: none; }
   }
 </style>
 </head>
 <body>
+
+<div class="announce" id="announce">
+  <div class="wrap">
+    <span><strong>New</strong> — attach a reference image and ziporg.ai matches its layout, colors, and copy.</span>
+    <button class="close-announce" id="closeAnnounce" aria-label="Dismiss announcement">×</button>
+  </div>
+</div>
 
 <header>
   <nav class="wrap">
@@ -486,7 +688,8 @@
         <rect x="4" y="3" width="16" height="18" rx="2" stroke="#ffb020" stroke-width="1.6"/>
         <path d="M11 3v18M11 6h2M11 9h-2M11 12h2M11 15h-2" stroke="#ffb020" stroke-width="1.6" stroke-linecap="round"/>
       </svg>
-      ziporg<span class="dot">.ai</span>
+      <span class="brand-name">ziporg<span class="dot">.ai</span></span>
+      <span class="version-pill">v2.0</span>
     </a>
     <div class="nav-links">
       <a href="#top">Console</a>
@@ -499,26 +702,48 @@
 <main>
   <section class="hero" id="top">
     <div class="wrap">
-      <div class="eyebrow">PROMPT&nbsp;→&nbsp;PROJECT&nbsp;→&nbsp;PROJECT.ZIP</div>
-      <h1>Describe the app.<br>Download the <span class="accent">.zip</span>.</h1>
-      <p class="sub">Type what you want built. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor.</p>
+      <div class="eyebrow reveal reveal-1">PROMPT&nbsp;→&nbsp;PROJECT&nbsp;→&nbsp;PROJECT.ZIP</div>
+      <h1 class="reveal reveal-2">Describe the app.<br>Download the <span class="accent">.zip</span>.</h1>
+      <p class="sub reveal reveal-3">Type what you want built, optionally attach a reference design. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor.</p>
 
+      <div class="console-frame reveal reveal-4">
       <div class="console">
-        <div class="console-pane pane-left">
+        <div class="console-pane pane-left" id="paneLeft">
           <div class="pane-head">
             <span class="pane-title"><span class="traffic"><span></span><span></span><span></span></span>prompt.txt</span>
             <span class="pane-title" id="charCount">0 chars</span>
           </div>
+
           <div class="editor">
             <div class="gutter">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8</div>
             <textarea id="prompt" placeholder="e.g. A habit tracker with a React frontend and a FastAPI backend, daily streaks, and a SQLite database."></textarea>
           </div>
+
+          <div class="attach-row" id="attachRow">
+            <div class="attach-chip">
+              <img id="attachThumb" src="" alt="" />
+              <span class="attach-name" id="attachName"></span>
+              <span class="attach-size" id="attachSize"></span>
+              <button class="attach-remove" id="attachRemove" type="button" aria-label="Remove reference image">×</button>
+            </div>
+          </div>
+
           <div class="pane-foot">
             <span class="char-count" id="charCountFoot">Ready when you are.</span>
-            <button class="zip-btn" id="generateBtn">
-              <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Generate app
-            </button>
+            <div class="foot-actions">
+              <input type="file" id="imageInput" accept="image/png,image/jpeg,image/webp" hidden />
+              <button class="icon-btn" id="attachBtn" type="button" aria-label="Attach reference image" title="Attach a reference image">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M21.44 11.05l-8.49 8.49a5 5 0 01-7.07-7.07l8.49-8.49a3.5 3.5 0 014.95 4.95l-8.49 8.49a2 2 0 01-2.83-2.83l7.78-7.78" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button class="zip-btn" id="generateBtn">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Generate app
+              </button>
+            </div>
+          </div>
+
+          <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
+            <span>Drop image to attach as reference design</span>
           </div>
         </div>
 
@@ -569,8 +794,9 @@
           </div>
         </div>
       </div>
+      </div>
 
-      <div class="hint">
+      <div class="hint reveal reveal-5">
         <button data-fill="A markdown-based note-taking app with tags, full-text search, and a dark mode toggle, built with vanilla JS.">Note-taking app</button>
         <button data-fill="A REST API for a bookstore with CRUD endpoints for books and authors, built in FastAPI with SQLite.">Bookstore API</button>
         <button data-fill="A single-page pomodoro timer with a settings panel for work/break lengths, using HTML, CSS and JS only.">Pomodoro timer</button>
@@ -592,7 +818,7 @@
         <div class="step">
           <div class="step-num">01 / prompt</div>
           <h3>Say what you're building</h3>
-          <p>Plain language in, no schema or template required. Mention the stack if you care, or leave it to ziporg.ai to choose one.</p>
+          <p>Plain language in, no schema or template required. Attach a reference image if you want the layout matched exactly.</p>
         </div>
         <div class="step">
           <div class="step-num">02 / generate</div>
@@ -621,6 +847,10 @@
 </footer>
 
 <script>
+  const announce = document.getElementById('announce');
+  const closeAnnounce = document.getElementById('closeAnnounce');
+  closeAnnounce.addEventListener('click', () => announce.classList.add('hide'));
+
   const promptEl = document.getElementById('prompt');
   const charCount = document.getElementById('charCount');
   const charCountFoot = document.getElementById('charCountFoot');
@@ -634,8 +864,22 @@
   const outputArea = document.getElementById('outputArea');
   const downloadBtn = document.getElementById('downloadBtn');
 
- 
-  const API_URL = 'https://ziporgai-production.up.railway.app/generate';
+  const paneLeft = document.getElementById('paneLeft');
+  const dropOverlay = document.getElementById('dropOverlay');
+  const imageInput = document.getElementById('imageInput');
+  const attachBtn = document.getElementById('attachBtn');
+  const attachRow = document.getElementById('attachRow');
+  const attachThumb = document.getElementById('attachThumb');
+  const attachName = document.getElementById('attachName');
+  const attachSize = document.getElementById('attachSize');
+  const attachRemove = document.getElementById('attachRemove');
+
+  // change this to your deployed API URL when you host the backend elsewhere
+  const API_URL = 'ziporgai-production-cb0a.up.railway.app/generate';
+
+  const MAX_IMAGE_MB = 8;
+  let selectedImage = null;
+  let selectedImageUrl = null;
 
   // build zipper teeth
   const TOOTH_COUNT = 28;
@@ -667,6 +911,75 @@
     });
   });
 
+  // ---------- reference image attachment ----------
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function setImage(file) {
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      statusLine.classList.add('error');
+      statusLine.textContent = 'That file isn\'t an image — attach a PNG, JPG, or WEBP instead.';
+      return;
+    }
+    if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
+      statusLine.classList.add('error');
+      statusLine.textContent = 'Image is over ' + MAX_IMAGE_MB + 'MB — use a smaller file.';
+      return;
+    }
+
+    if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
+    selectedImage = file;
+    selectedImageUrl = URL.createObjectURL(file);
+
+    attachThumb.src = selectedImageUrl;
+    attachName.textContent = file.name;
+    attachSize.textContent = formatSize(file.size);
+    attachRow.classList.add('show');
+    attachBtn.classList.add('active');
+
+    statusLine.classList.remove('error');
+    statusLine.textContent = 'Reference image attached — layout and colors will be matched where possible.';
+  }
+
+  function clearImage() {
+    if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
+    selectedImage = null;
+    selectedImageUrl = null;
+    imageInput.value = '';
+    attachRow.classList.remove('show');
+    attachBtn.classList.remove('active');
+  }
+
+  attachBtn.addEventListener('click', () => imageInput.click());
+  imageInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) setImage(e.target.files[0]);
+  });
+  attachRemove.addEventListener('click', clearImage);
+
+  let dragDepth = 0;
+  paneLeft.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth++;
+    dropOverlay.classList.add('show');
+  });
+  paneLeft.addEventListener('dragover', (e) => e.preventDefault());
+  paneLeft.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropOverlay.classList.remove('show');
+  });
+  paneLeft.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove('show');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) setImage(e.dataTransfer.files[0]);
+  });
+
+  // ---------- pipeline stages ----------
   function setStage(index, state) {
     // state: 'active' | 'done'
     const el = stages[index];
@@ -696,7 +1009,6 @@
       promptEl.focus();
       return;
     }
-    const apiUrl = API_URL;
 
     resetStages();
     statusLine.classList.remove('error');
@@ -729,10 +1041,13 @@
     }, 1400);
 
     try {
-      const res = await fetch(apiUrl, {
+      const formData = new FormData();
+      formData.append('prompt', prompt);
+      if (selectedImage) formData.append('reference_image', selectedImage);
+
+      const res = await fetch(API_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: formData
       });
 
       clearInterval(progressTimer);
