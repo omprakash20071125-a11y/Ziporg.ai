@@ -4,6 +4,7 @@ import tempfile
 import shutil
 from typing import Optional
 
+from pydantic import BaseModel
 from fastapi import (
     FastAPI,
     HTTPException,
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from phase3 import run_pipeline
+from chat_pipeline import build_graph
 
 app = FastAPI()
 
@@ -47,10 +49,67 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+# Initialize LangGraph once at app startup. Its InMemorySaver checkpointer
+# keeps each thread_id's parsed/chunked project + chat_history alive in
+# memory across requests.
+graph_app = build_graph()
 
+
+# --- Pydantic Schema for Q&A About a Generated Project ---
+class ChatPayload(BaseModel):
+    query: str
+    thread_id: str
+    # Only required on the FIRST /chat call for a given thread_id — after
+    # that, check_for_chunks in chat_pipeline.py sees the cached chunks for
+    # this thread and skips straight to retrieval, so it can be omitted.
+    project_zip_base64: Optional[str] = None
+
+
+# =====================================================================
+# 1. THE CHAT ENDPOINT — Q&A about a project AFTER it's been generated
+# =====================================================================
+@app.post("/chat")
+async def project_chat(payload: ChatPayload):
+    """
+    Q&A about a generated project. thread_id must match the thread_id used
+    when that project was generated (or any thread_id you've since chatted
+    with). On the first message for a thread_id, project_zip_base64 must be
+    supplied so the graph has something to unzip and index; later messages
+    reuse the same thread_id's cached chunks + chat_history automatically.
+    """
+    if not payload.query or not payload.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+
+    inputs = {"query": payload.query}
+    if payload.project_zip_base64:
+        inputs["zip_path"] = payload.project_zip_base64
+
+    config = {"configurable": {"thread_id": payload.thread_id}}
+
+    try:
+        result = graph_app.invoke(inputs, config=config)
+    except KeyError:
+        # No cached chunks for this thread_id AND no zip was attached.
+        raise HTTPException(
+            status_code=400,
+            detail="No project is loaded for this thread yet — attach project_zip_base64 on the first message.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+
+    return {
+        "thread_id": payload.thread_id,
+        "response": result.get("response", "I couldn't generate an answer for that.")
+    }
+
+
+# =====================================================================
+# 2. THE GENERATION ENDPOINT (Triggers the actual codebase build)
+# =====================================================================
 @app.post("/generate")
 def generate(
     background_tasks: BackgroundTasks,
+    thread_id: str = Form(...),  # frontend generates this and reuses it for later /chat calls
     prompt: str = Form(...),
     reference_image: Optional[UploadFile] = File(None),
 ):
@@ -194,6 +253,6 @@ def generate(
 
     return FileResponse(
         path=zip_path,
-        filename="project.zip",
+        filename=f"project_{thread_id}.zip",
         media_type="application/zip",
     )
