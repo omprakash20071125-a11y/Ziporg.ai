@@ -874,8 +874,7 @@
   const attachSize = document.getElementById('attachSize');
   const attachRemove = document.getElementById('attachRemove');
 
-  // change this to your deployed API URL when you host the backend elsewhere
-  const API_URL = 'http://ziporgai-production-cb0a.up.railway.app/generate';
+  const API_URL = 'https://ziporgai-production-cb0a.up.railway.app/generate';
 
   const MAX_IMAGE_MB = 8;
   let selectedImage = null;
@@ -923,7 +922,7 @@
 
     if (!file.type.startsWith('image/')) {
       statusLine.classList.add('error');
-      statusLine.textContent = 'That file isn\'t an image — attach a PNG, JPG, or WEBP instead.';
+      statusLine.textContent = "That file isn't an image — attach a PNG, JPG, or WEBP instead.";
       return;
     }
     if (file.size > MAX_IMAGE_MB * 1024 * 1024) {
@@ -1042,6 +1041,10 @@
 
     try {
       const formData = new FormData();
+      // Backend requires thread_id (Form field) on /generate — generate a
+      // fresh one per build so downloads/filenames don't collide.
+      const threadId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+      formData.append('thread_id', threadId);
       formData.append('prompt', prompt);
       if (selectedImage) formData.append('reference_image', selectedImage);
 
