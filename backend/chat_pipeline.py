@@ -42,6 +42,9 @@ def build_graph():
         query: str                          # user's question
         chat_history: Annotated[list[BaseMessage], add_messages]  # prior turns, defaults to []
         chunks: List[Document]              # extracted / split chunks
+        project_summary: str
+        description_of_each_file: dict[str,str]       # filename and its description 
+        combine_summary: str
         hypo_answer: str                    # HyDE hypothetical answer
         response: str                       # final generated answer
 
@@ -87,7 +90,61 @@ def build_graph():
                 print('fething of documents done')
 
         return {"chunks": documents}
+    
+    def description_of_each_file(state: State) -> State:
+        code_for_each_file = {}
+        for chunks in state['chunks']:
+            content = chunks.page_content
+            name = chunks.metadata['source']
+            prompt = PromptTemplate(template="""Summarize this source code in under 75 words. Describe its purpose, main functionality, key classes/functions, important dependencies, and how it fits into the project. Keep the summary factual, dense, and implementation-aware. Do not include unnecessary details or speculate beyond the code. code of the file is {code}""",input_variables=['code'])
+            chain = prompt | llm | parser
+            response = chain.invoke({'code':content})
+            code_for_each_file[name] = response
+        return ({'description_of_each_file':code_for_each_file})
+    
+    def combining_summaries(state: State) -> dict:
+        summaries = state["description_of_each_file"]
 
+        combined_text = "\n\n".join(
+            f"File: {filename}\nSummary: {summary}"
+            for filename, summary in summaries.items()
+        )
+
+        prompt = PromptTemplate(
+            template="""
+    You are an expert software architect.
+
+    Below are summaries of every file in a project.
+
+    Using only these summaries, create a concise project overview (maximum 250 words).
+
+    Include:
+    - Overall purpose of the project.
+    - Main technologies/frameworks used.
+    - High-level architecture.
+    - Major modules/features.
+    - How the important files interact.
+    - Any important observations about the project structure.
+
+    Do not mention every file individually.
+    Do not speculate beyond the summaries.
+    Keep the output dense and factual.
+
+    File summaries:
+
+    {summaries}
+    """,
+            input_variables=["summaries"],
+        )
+
+        chain = prompt | llm | parser
+
+        project_summary = chain.invoke(
+            {"summaries": combined_text}
+        )
+
+        return {"project_summary": project_summary,'combine_summary':combined_text}
+            
     def chunk_text_node(state: State) -> dict:
         """Node: splits raw per-file documents into retrieval-sized chunks."""
         docs = state["chunks"]
@@ -147,12 +204,48 @@ def build_graph():
 
         # D. Final LLM generation
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an incredibly intellectual and helpful assistant. Answer the user prompt based strictly on this context:\n\n{context}"),
+            ("system", """You are an expert software engineer helping the user understand a codebase.
+
+You are given:
+
+1. A high-level description of the project.
+2. Summaries of important files.
+3. Relevant code excerpts.
+
+Use the project summary to understand the architecture.
+
+Use the file summaries to understand where functionality lives.
+
+Use the retrieved code snippets as the source of implementation details.
+
+If implementation details conflict, trust the retrieved code snippets.
+
+If the answer cannot be determined from the provided information, say so.
+
+-------------------------
+
+PROJECT SUMMARY
+
+{project_summary}
+
+-------------------------
+
+FILE SUMMARIES
+
+{file_summaries}
+
+-------------------------
+
+RETRIEVED CODE
+
+{context}"""),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{query}"),
         ])
         chain = prompt | llm_final | parser
         final_output = chain.invoke({
+            'project_summary': state['project_summary'],
+            'file_summaries':state['combine_summary'],
             "context": context_str,
             "query": query,
             "chat_history": chat_history,  
@@ -167,7 +260,7 @@ def build_graph():
 
     # FIX 2: Added routing logic to check if chunks already live in memory
     def check_for_chunks(state: State):
-        if state.get("chunks"):
+        if state.get("project_summary") and state.get("chunks"):
             return "hypo_answer_generator"
         return "unzip_and_parse"
 
@@ -177,6 +270,8 @@ def build_graph():
     workflow.add_node("unzip_and_parse", unzip_and_parse_node)
     workflow.add_node("chunk_text", chunk_text_node)
     workflow.add_node("hypo_answer_generator", hypo_answer_generator_node)
+    workflow.add_node("description_of_each_file",description_of_each_file)
+    workflow.add_node("combining_summaries",combining_summaries)
     workflow.add_node("generate_response", generate_response_node)
 
     # FIX 3: Replaced standard START edge with conditional edge routing
@@ -189,7 +284,9 @@ def build_graph():
         }
     )
     workflow.add_edge("unzip_and_parse", "chunk_text")
-    workflow.add_edge("chunk_text", "hypo_answer_generator")
+    workflow.add_edge("chunk_text","description_of_each_file")
+    workflow.add_edge("description_of_each_file","combining_summaries")
+    workflow.add_edge("combining_summaries","hypo_answer_generator")
     workflow.add_edge("hypo_answer_generator", "generate_response")
     workflow.add_edge("generate_response", END)
 
