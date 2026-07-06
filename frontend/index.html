@@ -1133,7 +1133,10 @@
       <a href="#how" data-view="console" data-scroll="how">How it works</a>
       <a href="#" data-view="chat" class="nav-link-item">Chat with code</a>
     </div>
-    <a class="nav-cta" href="#" data-view="console">$ generate</a>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <a class="nav-cta" href="#" data-view="console">$ generate</a>
+      <button class="nav-cta" id="endSessionBtn" type="button" style="border-color:rgba(255,107,94,0.35); color:var(--error); cursor:pointer;" title="Clear the current project, chat, and prompt to start fresh">↺ end session</button>
+    </div>
   </nav>
 </header>
 
@@ -1397,7 +1400,7 @@
   const attachRemove = document.getElementById('attachRemove');
 
   // change this to your deployed API base when you host the backend elsewhere
-  const API_BASE = "https://ziporgai-production-a73e.up.railway.app";
+  const API_BASE = "https://ziporgai-production-cb0a.up.railway.app";
   const API_URL = API_BASE + "/generate";
 
   const MAX_IMAGE_MB = 8;
@@ -1915,7 +1918,55 @@
     });
   });
 
+  // ============================================================
+  // End session — wipes the current project everywhere (console
+  // pipeline state, chat history, and the saved localStorage record)
+  // so the user can start over with a brand-new prompt / thread_id.
+  // ============================================================
+  const endSessionBtn = document.getElementById('endSessionBtn');
 
+  function endSession() {
+    const proceed = confirm('End this session? This clears the generated project, chat history, and prompt so you can start fresh.');
+    if (!proceed) return;
+
+    // drop the persisted project record entirely
+    localStorage.removeItem('ziporgProject');
+
+    // ---- reset console state ----
+    promptEl.value = '';
+    promptEl.dispatchEvent(new Event('input'));
+    clearImage();
+    resetStages();
+    outputArea.classList.remove('show');
+    statusLine.classList.remove('error');
+    statusLine.textContent = 'Waiting for a prompt.';
+    pipelineState.textContent = 'idle';
+    if (currentDownloadUrl) {
+      URL.revokeObjectURL(currentDownloadUrl);
+      currentDownloadUrl = null;
+    }
+
+    // ---- reset chat state ----
+    project = null;
+    zipSentToChat = false;
+    chatMessages.innerHTML = '';
+    chatInputWrap.style.display = 'none';
+    chatInput.value = '';
+    chatInput.disabled = true;
+    chatSendBtn.disabled = true;
+    hintRow.style.display = 'none';
+    deployStrip.classList.remove('show');
+    downloadPill.style.display = 'none';
+    projectPillText.textContent = 'No project loaded';
+    emptyState.classList.add('show');
+    setStatus(null, 'idle');
+
+    // land back on a clean console, ready for a new prompt
+    switchView('console');
+    promptEl.focus();
+  }
+
+  endSessionBtn.addEventListener('click', endSession);
 
   // ---------- single-page view switching (console <-> chat) ----------
   // Both pages used to be separate files (index.html / chat.html) linked by
