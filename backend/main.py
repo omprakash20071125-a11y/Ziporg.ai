@@ -1,18 +1,25 @@
 import os
 import base64
 import uuid
+import logging
 import tempfile
 import shutil
 from typing import Optional
 from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import your LangGraph setup and file generation pipeline
 from chat_pipeline import build_graph
 from phase3 import run_pipeline
+
+# ---------------------------------------------------------------------
+# Logging: full detail goes here (server-side only), never to the client
+# ---------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ziporg")
 
 app = FastAPI(title="Unified Assistant & Code Generator")
 
@@ -42,6 +49,63 @@ app.add_middleware(
 # memory across requests.
 graph_app = build_graph()
 
+# ---------------------------------------------------------------------
+# Limits (tune these as you like — these are sane free-tier defaults)
+# ---------------------------------------------------------------------
+MAX_PROMPT_LEN = 4000            # characters
+MAX_QUERY_LEN = 2000             # characters
+MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
+ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+# ---------------------------------------------------------------------
+# Helper: detect quota / rate-limit style errors across providers
+# ---------------------------------------------------------------------
+def is_rate_limit_error(e: Exception) -> bool:
+    """Best-effort detection of quota/rate-limit errors from Gemini, Cohere,
+    or any generic HTTP 429, without depending on a specific SDK's
+    exception classes (keeps this resilient to library changes)."""
+    msg = str(e).lower()
+    return any(
+        term in msg
+        for term in [
+            "429",
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "resource_exhausted",
+            "resource exhausted",
+            "too many requests",
+        ]
+    )
+
+
+# ---------------------------------------------------------------------
+# Helper: safe path join to prevent path traversal when writing
+# generated files (protects against a malicious/hallucinated filename
+# like "../../etc/x" or an absolute path escaping work_dir)
+# ---------------------------------------------------------------------
+def safe_join(base: str, filename: str) -> str:
+    filename = filename.replace("\\", "/").lstrip("/")
+    target = os.path.normpath(os.path.join(base, filename))
+    base_abs = os.path.abspath(base)
+    if not (target == base_abs or target.startswith(base_abs + os.sep)):
+        raise ValueError(f"Unsafe file path rejected: {filename}")
+    return target
+
+
+GENERIC_ERROR = "Can't generate a response at this moment due to some technical issue. Please try again shortly."
+
+
+# ---------------------------------------------------------------------
+# Global safety net: catches anything that slips past individual
+# try/excepts below, so raw exception text is NEVER returned to a client.
+# ---------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def catch_all_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": GENERIC_ERROR})
+
 
 # --- Pydantic Schema for Q&A About a Generated Project ---
 class ChatPayload(BaseModel):
@@ -69,6 +133,12 @@ async def project_chat(payload: ChatPayload):
     if not payload.query or not payload.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
+    if len(payload.query) > MAX_QUERY_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query too long (max {MAX_QUERY_LEN} characters).",
+        )
+
     inputs = {"query": payload.query}
     if payload.project_zip_base64:
         inputs["zip_path"] = payload.project_zip_base64
@@ -77,23 +147,30 @@ async def project_chat(payload: ChatPayload):
 
     try:
         result = graph_app.invoke(inputs, config=config)
+
     except KeyError:
-        # No cached chunks for this thread_id AND no zip was attached.
         raise HTTPException(
             status_code=400,
             detail="No project is loaded for this thread yet — attach project_zip_base64 on the first message.",
         )
-    except (base64.binascii.Error, ValueError):
+
+    except (base64.binascii.Error, ValueError) as e:
+        logger.warning(f"Bad base64/zip for thread={payload.thread_id}: {e}")
         raise HTTPException(
             status_code=400,
-            detail="project_zip_base64 could not be decoded — make sure the full data URL / base64 string was sent.",
+            detail="Project data could not be read — please try generating again.",
         )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+        # Full detail logged server-side only; client gets a safe, generic message.
+        logger.error(f"Chat error [thread={payload.thread_id}]: {e}", exc_info=True)
+        if is_rate_limit_error(e):
+            raise HTTPException(status_code=503, detail=GENERIC_ERROR)
+        raise HTTPException(status_code=500, detail=GENERIC_ERROR)
 
     return {
         "thread_id": payload.thread_id,
-        "response": result.get("response", "I couldn't generate an answer for that.")
+        "response": result.get("response", "I couldn't generate an answer for that."),
     }
 
 
@@ -106,44 +183,90 @@ def generate(
     prompt: str = Form(...),
     reference_image: Optional[UploadFile] = File(None),
 ):
+    # -----------------------------
+    # Validate prompt
+    # -----------------------------
+    if not prompt or not prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+
+    if len(prompt) > MAX_PROMPT_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Prompt too long (max {MAX_PROMPT_LEN} characters).",
+        )
+
     reference_image_path = ""
     image_tmp_dir = None
 
+    # -----------------------------
+    # Validate + save uploaded image
+    # -----------------------------
     if reference_image is not None:
+        ext = os.path.splitext(reference_image.filename or "")[1].lower() or ".png"
+        if ext not in ALLOWED_IMAGE_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported image type. Allowed: {', '.join(ALLOWED_IMAGE_EXTS)}",
+            )
+
+        contents = reference_image.file.read()
+        if len(contents) > MAX_IMAGE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image too large (max {MAX_IMAGE_SIZE // (1024*1024)}MB).",
+            )
+        reference_image.file.seek(0)
+
         image_tmp_dir = tempfile.mkdtemp()
-        ext = os.path.splitext(reference_image.filename or "")[1] or ".png"
         reference_image_path = os.path.join(image_tmp_dir, f"reference{ext}")
         try:
             with open(reference_image_path, "wb") as f:
-                shutil.copyfileobj(reference_image.file, f)
+                f.write(contents)
         except Exception as e:
             shutil.rmtree(image_tmp_dir, ignore_errors=True)
-            raise HTTPException(status_code=500, detail=f"Failed to save reference image: {e}")
+            logger.error(f"Failed to save reference image [thread={thread_id}]: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=GENERIC_ERROR)
 
+    # -----------------------------
+    # Run AI pipeline
+    # -----------------------------
     try:
         file_code = run_pipeline(prompt, reference_image_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
+        logger.error(f"Pipeline failed [thread={thread_id}]: {e}", exc_info=True)
+        if is_rate_limit_error(e):
+            raise HTTPException(status_code=503, detail=GENERIC_ERROR)
+        raise HTTPException(status_code=500, detail=GENERIC_ERROR)
     finally:
         if image_tmp_dir:
             shutil.rmtree(image_tmp_dir, ignore_errors=True)
 
     if not file_code:
-        raise HTTPException(status_code=500, detail="No files were generated")
+        raise HTTPException(status_code=500, detail="No files were generated. Please try again.")
 
+    # -----------------------------
+    # Write files (path-traversal safe)
+    # -----------------------------
     work_dir = tempfile.mkdtemp()
     try:
         for filename, content in file_code.items():
-            fpath = os.path.join(work_dir, filename)
+            try:
+                fpath = safe_join(work_dir, filename)
+            except ValueError as e:
+                logger.warning(f"Rejected unsafe filename from pipeline [thread={thread_id}]: {filename}")
+                continue  # skip this file rather than failing the whole generation
+
             os.makedirs(os.path.dirname(fpath) or work_dir, exist_ok=True)
-            with open(fpath, "w") as f:
-                f.write(content)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(str(content))
 
         run_id = str(uuid.uuid4())
         zip_base = os.path.join(tempfile.gettempdir(), run_id)
         zip_path = shutil.make_archive(zip_base, "zip", work_dir)
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Zip creation failed: {e}")
+        logger.error(f"Zip creation failed [thread={thread_id}]: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GENERIC_ERROR)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
