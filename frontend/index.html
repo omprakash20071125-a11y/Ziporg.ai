@@ -1745,9 +1745,6 @@
   const endSessionBtn = document.getElementById('endSessionBtn');
 
   function endSession() {
-    const proceed = confirm('End this session? This clears the generated project, chat history, and prompt so you can start fresh.');
-    if (!proceed) return;
-
     // drop the persisted project record entirely
     localStorage.removeItem('ziporgProject');
 
