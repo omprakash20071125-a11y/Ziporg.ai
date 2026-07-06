@@ -84,6 +84,7 @@ def build_graph():
                     continue  
 
                 documents.append(Document(page_content=text, metadata={"source": path}))
+                print('fething of documents done')
 
         return {"chunks": documents}
 
@@ -92,6 +93,7 @@ def build_graph():
         docs = state["chunks"]
         splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
         chunks = splitter.split_documents(docs)
+        print('chunking of docs done')
         return {"chunks": chunks}
 
     def hypo_answer_generator_node(state: State) -> dict:
@@ -155,6 +157,7 @@ def build_graph():
             "query": query,
             "chat_history": chat_history,  
         })
+        print("response generated")
         
         # FIX 1: Return real Message objects so the add_messages reducer can append them cleanly
         return {
