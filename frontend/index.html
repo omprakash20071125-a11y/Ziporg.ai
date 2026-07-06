@@ -286,6 +286,20 @@
     .console{ grid-template-columns: 1fr; }
   }
 
+  /* chat-with-code console shell (single column, stacked vertically) —
+     mirrors .console's overflow/background/radius handling so the
+     gradient .console-frame border has an opaque surface to sit on,
+     instead of bleeding its amber/teal gradient through into the
+     empty-state and chat content underneath it. */
+  .chat-console{
+    display:flex;
+    flex-direction: column;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+    min-height: 340px;
+  }
+
   .console-pane{ display:flex; flex-direction:column; min-height: 340px; }
   .pane-left{ border-right: 1px solid var(--border); position: relative; }
   @media (max-width: 860px){ .pane-left{ border-right:none; border-bottom: 1px solid var(--border); } }
