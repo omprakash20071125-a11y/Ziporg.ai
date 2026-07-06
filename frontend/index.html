@@ -22,6 +22,19 @@
     --radius: 10px;
   }
 
+  html[data-theme="light"]{
+    --bg: #f6f4ee;
+    --surface: #ffffff;
+    --surface-2: #f0ede4;
+    --border: #ddd7c8;
+    --text: #17181c;
+    --muted: #6b6f76;
+    --amber: #c9791a;
+    --amber-dim: #a9741a;
+    --teal: #0f8f79;
+    --error: #d9463b;
+  }
+
   /* subtle cross-fade when switching between the console and chat views */
   @view-transition{
     navigation: auto;
@@ -43,6 +56,7 @@
     background-image:
       radial-gradient(circle at 12% -10%, rgba(255,176,32,0.08), transparent 40%),
       radial-gradient(circle at 88% 10%, rgba(77,217,192,0.06), transparent 40%);
+    transition: background-color .25s ease, color .25s ease;
   }
 
   a{ color: inherit; }
@@ -117,6 +131,9 @@
     background: rgba(17,19,24,0.75);
     border-bottom: 1px solid var(--border);
   }
+  html[data-theme="light"] header{
+    background: rgba(246,244,238,0.75);
+  }
   nav.wrap{
     display:flex;
     align-items:center;
@@ -133,7 +150,7 @@
     letter-spacing: -0.02em;
     text-decoration:none;
   }
-  .brand .dot{ color: var(--amber); }
+  .brand .dot{ color: var(--amber); transition: color .25s ease; }
   .brand .brand-name{ white-space: nowrap; }
   .brand svg{ display:block; filter: drop-shadow(0 0 6px rgba(255,176,32,0.45)); }
   .version-pill{
@@ -143,11 +160,14 @@
     color: var(--teal);
     background: rgba(77,217,192,0.1);
     border: 1px solid rgba(77,217,192,0.3);
-    padding: 2px 7px;
+    padding: 3px 8px;
     border-radius: 999px;
     letter-spacing: 0.03em;
-    margin-left: 2px;
-    transform: translateY(-1px);
+    margin-left: 4px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
   }
 
   .nav-links{
@@ -158,6 +178,7 @@
   }
   .nav-links a{ text-decoration:none; transition: color .15s ease; }
   .nav-links a:hover{ color: var(--text); }
+  .nav-links a.current{ color: var(--amber); }
 
   .nav-cta{
     font-family:'JetBrains Mono', monospace;
@@ -171,6 +192,17 @@
     transition: border-color .15s ease;
   }
   .nav-cta:hover{ border-color: var(--amber-dim); }
+
+  .theme-toggle{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    cursor: pointer;
+  }
+  .theme-toggle svg{ width:17px; height:17px; display:block; }
 
   @media (max-width: 760px){ .nav-links{ display:none; } }
 
@@ -369,6 +401,9 @@
     font-family:'JetBrains Mono', monospace;
     font-size: 13px;
     color: var(--amber);
+  }
+  html[data-theme="light"] .drop-overlay{
+    background: rgba(246,244,238,0.94);
   }
   .drop-overlay.show{ display:flex; }
 
@@ -609,6 +644,7 @@
     transition: border-color .15s ease, color .15s ease;
   }
   .hint button:hover{ border-color: var(--amber-dim); color: var(--text); }
+  .hint button:disabled{ opacity: .4; cursor: not-allowed; }
 
   /* ---------- ZIPPER DIVIDER (signature, section break) ---------- */
   .divider{
@@ -703,227 +739,6 @@
      former chat.html (only the rules not already covered above)
      ================================================================ */
 
-  :root{
-    --bg: #111318;
-    --surface: #191c22;
-    --surface-2: #20242c;
-    --border: #2a2f38;
-    --text: #edeef0;
-    --muted: #8a8f98;
-    --amber: #ffb020;
-    --amber-dim: #a9741a;
-    --teal: #4dd9c0;
-    --error: #ff6b5e;
-    --radius: 10px;
-  }
-
-  *{ box-sizing: border-box; }
-  html{ scroll-behavior: smooth; }
-  body{
-    margin:0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Inter', sans-serif;
-    -webkit-font-smoothing: antialiased;
-    background-image:
-      radial-gradient(circle at 12% -10%, rgba(255,176,32,0.08), transparent 40%),
-      radial-gradient(circle at 88% 10%, rgba(77,217,192,0.06), transparent 40%);
-  }
-
-  a{ color: inherit; }
-  ::selection{ background: var(--amber); color: #16130a; }
-  :focus-visible{ outline: 2px solid var(--amber); outline-offset: 3px; }
-
-  .wrap{
-    max-width: 1180px;
-    margin: 0 auto;
-    padding: 0 28px;
-  }
-
-  body::after{
-    content:'';
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    pointer-events: none;
-    opacity: 0.035;
-    mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-  }
-
-  /* ---------- NAV ---------- */
-  header{
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    backdrop-filter: blur(10px);
-    background: rgba(17,19,24,0.75);
-    border-bottom: 1px solid var(--border);
-  }
-  nav.wrap{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    height: 68px;
-  }
-  .brand{
-    display:flex;
-    align-items:center;
-    gap:10px;
-    font-family:'Space Grotesk', sans-serif;
-    font-weight:700;
-    font-size: 19px;
-    letter-spacing: -0.02em;
-    text-decoration:none;
-  }
-  .brand .dot{ color: var(--amber); }
-  .brand .brand-name{ white-space: nowrap; }
-  .brand svg{ display:block; filter: drop-shadow(0 0 6px rgba(255,176,32,0.45)); }
-  .version-pill{
-    font-family:'JetBrains Mono', monospace;
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--teal);
-    background: rgba(77,217,192,0.1);
-    border: 1px solid rgba(77,217,192,0.3);
-    padding: 2px 7px;
-    border-radius: 999px;
-    letter-spacing: 0.03em;
-    margin-left: 2px;
-    transform: translateY(-1px);
-  }
-
-  .nav-links{
-    display:flex;
-    gap: 28px;
-    font-size: 14px;
-    color: var(--muted);
-  }
-  .nav-links a{ text-decoration:none; transition: color .15s ease; }
-  .nav-links a:hover{ color: var(--text); }
-  .nav-links a.current{ color: var(--amber); }
-
-  .nav-cta{
-    font-family:'JetBrains Mono', monospace;
-    font-size: 13px;
-    color: var(--text);
-    border: 1px solid var(--border);
-    padding: 8px 14px;
-    border-radius: 7px;
-    text-decoration:none;
-    background: var(--surface);
-    transition: border-color .15s ease;
-  }
-  .nav-cta:hover{ border-color: var(--amber-dim); }
-
-  @media (max-width: 760px){ .nav-links{ display:none; } }
-
-  @keyframes fadeUp{
-    from{ opacity:0; transform: translateY(14px); }
-    to{ opacity:1; transform: translateY(0); }
-  }
-  .reveal{ opacity: 0; animation: fadeUp .6s cubic-bezier(.2,.7,.3,1) forwards; }
-  .reveal-1{ animation-delay: .02s; }
-  .reveal-2{ animation-delay: .10s; }
-  .reveal-3{ animation-delay: .18s; }
-  .reveal-4{ animation-delay: .28s; }
-
-  /* ---------- HERO / PAGE HEAD ---------- */
-  .hero{ padding: 60px 0 40px; }
-  .eyebrow{
-    font-family:'JetBrains Mono', monospace;
-    font-size: 12.5px;
-    color: var(--teal);
-    letter-spacing: 0.06em;
-    display:flex;
-    align-items:center;
-    gap: 10px;
-    margin-bottom: 22px;
-  }
-  .eyebrow::before{
-    content:'';
-    width: 7px; height: 7px;
-    background: var(--teal);
-    border-radius: 50%;
-    box-shadow: 0 0 0 3px rgba(77,217,192,0.18);
-  }
-
-  h1{
-    font-family:'Space Grotesk', sans-serif;
-    font-weight: 700;
-    font-size: clamp(32px, 4.4vw, 50px);
-    line-height: 1.05;
-    letter-spacing: -0.025em;
-    margin: 0 0 14px;
-    max-width: 780px;
-  }
-  h1 .accent{
-    background: linear-gradient(100deg, var(--amber), #ffd27a 50%, var(--amber));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-  .sub{
-    font-size: 16px;
-    line-height: 1.6;
-    color: var(--muted);
-    max-width: 600px;
-    margin: 0 0 30px;
-  }
-
-  /* ---------- project bar ---------- */
-  .project-bar{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 14px;
-    flex-wrap: wrap;
-    margin-bottom: 28px;
-  }
-  .project-bar-left, .project-bar-right{
-    display:flex;
-    align-items:center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .pill{
-    display:flex;
-    align-items:center;
-    gap: 8px;
-    font-family:'JetBrains Mono', monospace;
-    font-size: 12.5px;
-    text-decoration:none;
-    padding: 8px 13px;
-    border-radius: 7px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--muted);
-    cursor:pointer;
-    transition: border-color .15s ease, color .15s ease;
-  }
-  .pill:hover{ border-color: var(--amber-dim); color: var(--text); }
-  .pill svg{ width:14px; height:14px; flex-shrink:0; }
-  .pill.accent{
-    color: var(--teal);
-    background: rgba(77,217,192,0.08);
-    border-color: rgba(77,217,192,0.25);
-  }
-  .pill.accent:hover{ border-color: var(--teal); color: var(--teal); }
-  .pill.warn{
-    color: var(--amber);
-    background: rgba(255,176,32,0.08);
-    border-color: rgba(255,176,32,0.28);
-  }
-
-  /* ---------- CONSOLE (chat) ---------- */
-  .chat-console{
-    border-radius: var(--radius);
-    overflow:hidden;
-    background: var(--surface);
-    display:flex;
-    flex-direction:column;
-  }
-
   .pane-title.status-deploying{ color: var(--amber); }
   .pane-title.status-ready{ color: var(--teal); }
   .pane-title.status-error{ color: var(--error); }
@@ -995,13 +810,6 @@
 
   /* editor-style input, matching prompt.txt on the console page */
   .chat-input-wrap{ border-top: 1px solid var(--border); }
-  .editor{
-    flex:1;
-    display:flex;
-    font-family:'JetBrains Mono', monospace;
-    font-size: 14.5px;
-    line-height: 1.7;
-  }
   .chat-input-wrap .gutter{
     padding: 16px 12px;
   }
@@ -1020,48 +828,53 @@
   #chatInput::placeholder{ color: #4a5058; }
   #chatInput:disabled{ opacity: .5; cursor: not-allowed; }
 
+  .zip-btn:disabled{
+    cursor: not-allowed;
+  }
 
-  .zip-btn{
-    position: relative;
-    appearance:none;
-    border:0;
-    cursor:pointer;
-    background: var(--amber);
-    color: #17130a;
-    font-family:'Space Grotesk', sans-serif;
-    font-weight: 600;
-    font-size: 14.5px;
-    padding: 11px 20px 11px 16px;
-    border-radius: 7px;
+  /* ---------- project bar ---------- */
+  .project-bar{
     display:flex;
     align-items:center;
-    gap: 9px;
-    transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
-    box-shadow: 0 8px 18px -8px rgba(255,176,32,0.55);
-    white-space: nowrap;
-    overflow: hidden;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
   }
-  .zip-btn::before{
-    content:'';
-    position:absolute;
-    inset: 0;
-    background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.35) 48%, transparent 66%);
-    transform: translateX(-120%);
-    transition: transform .5s ease;
+  .project-bar-left, .project-bar-right{
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    flex-wrap: wrap;
   }
-  .zip-btn:hover::before{ transform: translateX(120%); }
-  .zip-btn:hover{ transform: translateY(-1px); }
-  .zip-btn:active{ transform: translateY(0); }
-  .zip-btn:disabled{
-    background: #3a3f4a;
+  .pill{
+    display:flex;
+    align-items:center;
+    gap: 8px;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    text-decoration:none;
+    padding: 8px 13px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface);
     color: var(--muted);
-    cursor: not-allowed;
-    box-shadow: none;
-    transform:none;
+    cursor:pointer;
+    transition: border-color .15s ease, color .15s ease;
   }
-  .zip-btn:disabled::before{ display:none; }
-  .zip-btn svg{ width:16px; height:16px; flex-shrink:0; position:relative; }
-  .zip-btn span, .zip-btn{ position: relative; }
+  .pill:hover{ border-color: var(--amber-dim); color: var(--text); }
+  .pill svg{ width:14px; height:14px; flex-shrink:0; }
+  .pill.accent{
+    color: var(--teal);
+    background: rgba(77,217,192,0.08);
+    border-color: rgba(77,217,192,0.25);
+  }
+  .pill.accent:hover{ border-color: var(--teal); color: var(--teal); }
+  .pill.warn{
+    color: var(--amber);
+    background: rgba(255,176,32,0.08);
+    border-color: rgba(255,176,32,0.28);
+  }
 
   /* ---------- empty state (no project loaded) ---------- */
   .empty-state{
@@ -1087,33 +900,13 @@
   }
   .empty-state .nav-cta{ margin-top: 6px; }
 
-  .hint{
-    display:flex; flex-wrap:wrap; gap:8px;
-    margin-top: 18px;
-  }
-  .hint button{
-    appearance:none;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--muted);
-    font-family:'Inter', sans-serif;
-    font-size: 12.5px;
-    padding: 7px 12px;
-    border-radius: 999px;
-    cursor:pointer;
-    transition: border-color .15s ease, color .15s ease;
-  }
-  .hint button:hover{ border-color: var(--amber-dim); color: var(--text); }
-  .hint button:disabled{ opacity: .4; cursor: not-allowed; }
-
-
 </style>
 </head>
 <body>
 
 <div class="announce" id="announce">
   <div class="wrap">
-    <span><strong>New</strong> — attach a reference image and ziporg.ai matches its layout, colors, and copy.</span>
+    <span><strong>New</strong> — attach a reference image to match your layout & colors, then chat with the generated project right after it's built.</span>
     <button class="close-announce" id="closeAnnounce" aria-label="Dismiss announcement">×</button>
   </div>
 </div>
@@ -1126,7 +919,7 @@
         <path d="M11 3v18M11 6h2M11 9h-2M11 12h2M11 15h-2" stroke="#ffb020" stroke-width="1.6" stroke-linecap="round"/>
       </svg>
       <span class="brand-name">ziporg<span class="dot">.ai</span></span>
-      <span class="version-pill">v2.0</span>
+      <span class="version-pill">V3.0</span>
     </a>
     <div class="nav-links">
       <a href="#" data-view="console" class="nav-link-item">Console</a>
@@ -1135,6 +928,10 @@
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <a class="nav-cta" href="#" data-view="console">$ generate</a>
+      <button class="nav-cta theme-toggle" id="themeToggle" type="button" title="Toggle light / dark mode" aria-label="Toggle light / dark mode">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" style="display:none;"><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.4M12 19.1v2.4M4.5 12H2.1M21.9 12h-2.4M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </button>
       <button class="nav-cta" id="endSessionBtn" type="button" style="border-color:rgba(255,107,94,0.35); color:var(--error); cursor:pointer;" title="Clear the current project, chat, and prompt to start fresh">↺ end session</button>
     </div>
   </nav>
@@ -1147,7 +944,7 @@
     <div class="wrap">
       <div class="eyebrow reveal reveal-1">PROMPT&nbsp;→&nbsp;PROJECT&nbsp;→&nbsp;PROJECT.ZIP</div>
       <h1 class="reveal reveal-2">Describe the app.<br>Download the <span class="accent">.zip</span>.</h1>
-      <p class="sub reveal reveal-3">Type what you want built, optionally attach a reference design. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor.</p>
+      <p class="sub reveal reveal-3">Type what you want built, optionally attach a reference image. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor — then chat with it to keep iterating.</p>
 
       <div class="console-frame reveal reveal-4">
       <div class="console">
@@ -1375,6 +1172,28 @@
   const announce = document.getElementById('announce');
   const closeAnnounce = document.getElementById('closeAnnounce');
   closeAnnounce.addEventListener('click', () => announce.classList.add('hide'));
+
+  // ---------- theme toggle (light / dark) ----------
+  const themeToggle = document.getElementById('themeToggle');
+  const themeIconMoon = document.getElementById('themeIconMoon');
+  const themeIconSun = document.getElementById('themeIconSun');
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const isLight = theme === 'light';
+    themeIconMoon.style.display = isLight ? 'none' : 'block';
+    themeIconSun.style.display = isLight ? 'block' : 'none';
+    try { localStorage.setItem('ziporgTheme', theme); } catch (_) {}
+  }
+
+  let savedTheme = 'dark';
+  try { savedTheme = localStorage.getItem('ziporgTheme') || 'dark'; } catch (_) {}
+  applyTheme(savedTheme);
+
+  themeToggle.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    applyTheme(current === 'light' ? 'dark' : 'light');
+  });
 
   const promptEl = document.getElementById('prompt');
   const charCount = document.getElementById('charCount');
