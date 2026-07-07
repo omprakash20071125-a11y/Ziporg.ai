@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import your LangGraph setup and file generation pipeline
-from chat_pipeline import build_graph
+from chat_pipeline_new import build_graph
 from phase3 import run_pipeline
 
 # ---------------------------------------------------------------------
