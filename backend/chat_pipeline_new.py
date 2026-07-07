@@ -30,22 +30,20 @@ parser = StrOutputParser()
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5)
 llm_final = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
-co = cohere.ClientV2(os.getenv("COHERE_API_KEY"))
-
 checkpointer = InMemorySaver()
 
 def build_graph():
 
     # --- 1. Define the Graph State ---
     class State(TypedDict):
-        zip_path: str                       # incoming base64 zip string
-        query: str                          # user's question
-        chat_history: Annotated[list[BaseMessage], add_messages]  # prior turns, defaults to []
-        chunks: List[Document]              # extracted / split chunks
+        zip_path: str                       
+        query: str                       
+        chat_history: Annotated[list[BaseMessage], add_messages] 
+        chunks: List[Document]           
         project_summary: str
-        description_of_each_file: dict[str,str]       # filename and its description 
+        description_of_each_file: dict[str,str]    
         combine_summary: str
-        response: str                       # final generated answer
+        response: str              
 
     # --- 2. Helpers & Nodes ---
     BINARY_EXTENSIONS = {
@@ -99,6 +97,7 @@ def build_graph():
             chain = prompt | llm | parser
             response = chain.invoke({'code':content})
             code_for_each_file[name] = response
+            print('description_generated')
         return ({'description_of_each_file':code_for_each_file})
     
     def combining_summaries(state: State) -> dict:
@@ -141,7 +140,7 @@ def build_graph():
         project_summary = chain.invoke(
             {"summaries": combined_text}
         )
-
+        print('combined_summariers')
         return {"project_summary": project_summary,'combine_summary':combined_text}
             
     def response(state: State) -> State:
@@ -238,6 +237,7 @@ def build_graph():
             {query}""",input_variables=['project_summary','file_summaries','query'])
         chain = prompt | llm | parser
         response = chain.invoke({"query": state["query"],"project_summary":state['project_summary'],'file_summaries':state['combine_summary']})
+        print('response_generated')
         return ({"response": response,
             "chat_history": [HumanMessage(content=state['query']), AIMessage(content=response)]})
 
