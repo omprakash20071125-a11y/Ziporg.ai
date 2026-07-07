@@ -35,6 +35,25 @@
     --error: #d9463b;
   }
 
+  /* ---------- OVERCLOCK (third mode) ----------
+     concept: the brand's own zipper/circuit motif pushed to its logical
+     extreme — a glowing "power seam" running through the console border
+     and zipper track, a faint circuit-grid backdrop, and a slow scanline
+     sweep. reuses --amber/--teal as the two neon rails so every existing
+     component (buttons, pills, zipper teeth, links) re-themes for free. */
+  html[data-theme="cyber"]{
+    --bg: #06070f;
+    --surface: #0c0e1d;
+    --surface-2: #121528;
+    --border: #2a2e5c;
+    --text: #ecefff;
+    --muted: #848dc4;
+    --amber: #ff3ecf;
+    --amber-dim: #b0209b;
+    --teal: #2fe4ff;
+    --error: #ff4d6d;
+  }
+
   /* subtle cross-fade when switching between the console and chat views */
   @view-transition{
     navigation: auto;
@@ -914,9 +933,147 @@
   }
   .empty-state .nav-cta{ margin-top: 6px; }
 
+  /* ================================================================
+     OVERCLOCK — atmosphere + signature effects (cyber mode only)
+     ================================================================ */
+
+  html[data-theme="cyber"] body{
+    background-image:
+      radial-gradient(circle at 12% -10%, rgba(255,62,207,0.10), transparent 42%),
+      radial-gradient(circle at 88% 8%, rgba(47,228,255,0.10), transparent 42%);
+  }
+
+  /* circuit grid, fixed behind all content */
+  .grid-fx{
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    display: none;
+  }
+  html[data-theme="cyber"] .grid-fx{
+    display: block;
+    background-image:
+      linear-gradient(rgba(47,228,255,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(47,228,255,0.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, black 0%, transparent 72%);
+            mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, black 0%, transparent 72%);
+  }
+  html[data-theme="cyber"] .grid-fx::after{
+    content:'';
+    position: absolute;
+    left: 0; right: 0;
+    height: 160px;
+    background: linear-gradient(180deg, transparent, rgba(47,228,255,0.05) 45%, transparent);
+    animation: scanSweep 8s linear infinite;
+  }
+  @keyframes scanSweep{
+    0%{ top: -160px; }
+    100%{ top: 100vh; }
+  }
+
+  html[data-theme="cyber"] header{
+    background: rgba(6,7,15,0.72);
+    border-bottom-color: rgba(47,228,255,0.18);
+  }
+
+  html[data-theme="cyber"] .brand svg{
+    filter: drop-shadow(0 0 7px rgba(255,62,207,0.65));
+  }
+  html[data-theme="cyber"] .brand svg rect,
+  html[data-theme="cyber"] .brand svg path{
+    stroke: #ff3ecf;
+  }
+
+  /* holographic headline — the one bold move, kept to a single element */
+  html[data-theme="cyber"] h1 .accent{
+    background: linear-gradient(100deg, var(--teal), #ffffff 45%, var(--amber) 65%, var(--teal));
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: holoSheen 5s ease-in-out infinite;
+  }
+  @keyframes holoSheen{
+    0%, 100%{ background-position: 0% 50%; }
+    50%{ background-position: 100% 50%; }
+  }
+
+  html[data-theme="cyber"] .eyebrow::before{
+    box-shadow: 0 0 0 3px rgba(47,228,255,0.22), 0 0 10px rgba(47,228,255,0.6);
+  }
+
+  /* the power seam — console border now glows and slowly breathes.
+     NOTE: combined with the .reveal entrance animation (fadeUp) here,
+     rather than overriding it, since the `animation` shorthand resets
+     every sub-property — replacing it outright left opacity stuck at 0. */
+  html[data-theme="cyber"] .console-frame{
+    background: linear-gradient(135deg, var(--teal), var(--amber) 50%, var(--teal));
+    background-size: 200% 200%;
+    box-shadow:
+      0 0 0 1px rgba(47,228,255,0.1),
+      0 0 34px -4px rgba(47,228,255,0.45),
+      0 0 60px -10px rgba(255,62,207,0.35),
+      0 40px 90px -35px rgba(0,0,0,0.9);
+    animation:
+      fadeUp .6s cubic-bezier(.2,.7,.3,1) .28s forwards,
+      seamFlow 6s ease-in-out .9s infinite;
+  }
+  @keyframes seamFlow{
+    0%, 100%{ background-position: 0% 50%; filter: brightness(1); }
+    50%{ background-position: 100% 50%; filter: brightness(1.3); }
+  }
+
+  html[data-theme="cyber"] .pane-head,
+  html[data-theme="cyber"] .pane-foot{
+    background: linear-gradient(180deg, rgba(47,228,255,0.05), transparent);
+  }
+
+  /* zipper track becomes the literal "power seam" once teeth are engaged */
+  html[data-theme="cyber"] .zipper-fill{
+    background: linear-gradient(90deg, var(--teal), var(--amber));
+    box-shadow: 0 0 10px rgba(47,228,255,0.7);
+  }
+  html[data-theme="cyber"] .zipper-teeth i.zipped{
+    filter: drop-shadow(0 0 4px rgba(255,62,207,0.8));
+  }
+  html[data-theme="cyber"] .zipper-pull{
+    box-shadow: 0 0 10px rgba(255,62,207,0.75);
+  }
+
+  html[data-theme="cyber"] .zip-btn{
+    box-shadow: 0 0 22px -4px rgba(255,62,207,0.75);
+  }
+  html[data-theme="cyber"] .download-btn{
+    box-shadow: 0 0 18px -6px rgba(47,228,255,0.6);
+  }
+
+  html[data-theme="cyber"] ::selection{
+    background: var(--amber);
+    color: #06070f;
+  }
+
+  html[data-theme="cyber"] ::-webkit-scrollbar{ width: 10px; height: 10px; }
+  html[data-theme="cyber"] ::-webkit-scrollbar-track{ background: var(--surface); }
+  html[data-theme="cyber"] ::-webkit-scrollbar-thumb{
+    background: linear-gradient(var(--teal), var(--amber));
+    border-radius: 6px;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    html[data-theme="cyber"] .grid-fx::after,
+    html[data-theme="cyber"] h1 .accent,
+    html[data-theme="cyber"] .console-frame{
+      animation: none !important;
+    }
+  }
+
 </style>
 </head>
 <body>
+
+<div class="grid-fx" aria-hidden="true"></div>
 
 <div class="announce" id="announce">
   <div class="wrap">
@@ -941,10 +1098,10 @@
       <a href="#" data-view="chat" class="nav-link-item">Chat with code</a>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
-      <a class="nav-cta" href="#" data-view="console">$ generate</a>
-      <button class="nav-cta theme-toggle" id="themeToggle" type="button" title="Toggle light / dark mode" aria-label="Toggle light / dark mode">
+      <button class="nav-cta theme-toggle" id="themeToggle" type="button" title="Cycle dark / light / overclock mode" aria-label="Cycle dark / light / overclock mode">
         <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" style="display:none;"><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.4M12 19.1v2.4M4.5 12H2.1M21.9 12h-2.4M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <svg id="themeIconBolt" viewBox="0 0 24 24" fill="none" style="display:none;"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button class="nav-cta" id="endSessionBtn" type="button" style="border-color:rgba(255,107,94,0.35); color:var(--error); cursor:pointer;" title="Clear the current project, chat, and prompt to start fresh">↺ end session</button>
     </div>
@@ -1187,26 +1344,35 @@
   const closeAnnounce = document.getElementById('closeAnnounce');
   closeAnnounce.addEventListener('click', () => announce.classList.add('hide'));
 
-  // ---------- theme toggle (light / dark) ----------
+  // ---------- theme toggle (dark / light / overclock) ----------
   const themeToggle = document.getElementById('themeToggle');
   const themeIconMoon = document.getElementById('themeIconMoon');
   const themeIconSun = document.getElementById('themeIconSun');
+  const themeIconBolt = document.getElementById('themeIconBolt');
+  const THEME_ORDER = ['dark', 'light', 'cyber'];
+  const THEME_LABEL = { dark: 'dark', light: 'light', cyber: 'overclock' };
 
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    const isLight = theme === 'light';
-    themeIconMoon.style.display = isLight ? 'none' : 'block';
-    themeIconSun.style.display = isLight ? 'block' : 'none';
+    themeIconMoon.style.display = theme === 'dark' ? 'block' : 'none';
+    themeIconSun.style.display = theme === 'light' ? 'block' : 'none';
+    themeIconBolt.style.display = theme === 'cyber' ? 'block' : 'none';
+    themeToggle.title = 'Cycle theme (currently ' + THEME_LABEL[theme] + ')';
+    themeToggle.setAttribute('aria-label', themeToggle.title);
     try { localStorage.setItem('ziporgTheme', theme); } catch (_) {}
   }
 
   let savedTheme = 'dark';
-  try { savedTheme = localStorage.getItem('ziporgTheme') || 'dark'; } catch (_) {}
+  try {
+    const stored = localStorage.getItem('ziporgTheme');
+    if (stored && THEME_ORDER.includes(stored)) savedTheme = stored;
+  } catch (_) {}
   applyTheme(savedTheme);
 
   themeToggle.addEventListener('click', () => {
     const current = document.documentElement.getAttribute('data-theme') || 'dark';
-    applyTheme(current === 'light' ? 'dark' : 'light');
+    const nextIndex = (THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length;
+    applyTheme(THEME_ORDER[nextIndex]);
   });
 
   const promptEl = document.getElementById('prompt');
