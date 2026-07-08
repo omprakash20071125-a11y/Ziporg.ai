@@ -54,6 +54,30 @@
     --error: #ff4d6d;
   }
 
+  /* ---------- SUPERNOVA (fourth mode) ----------
+     concept: neubrutalist pop-art. --amber/--teal are repurposed as the
+     two sticker-ink colors (hot pink + electric cyan) so every existing
+     component that already keys off them (buttons, pills, zipper) gets
+     recolored for free; the rest of this mode's work is thick black
+     borders, hard offset shadows (0 blur), a soft floating aurora-blob
+     backdrop, a halftone dot texture, and a sticker-layered headline. */
+  html[data-theme="supernova"]{
+    --bg: #fff4e1;
+    --surface: #ffffff;
+    --surface-2: #fff1c9;
+    --border: #0d0d0d;
+    --text: #0d0d0d;
+    --muted: #57534a;
+    --amber: #ff2f8f;
+    --amber-dim: #c71f70;
+    --teal: #00c2ff;
+    --error: #ff3131;
+    --pop-yellow: #ffe100;
+    --pop-purple: #7c3aed;
+    --pop-green: #29d17a;
+    --ink: #0d0d0d;
+  }
+
   /* subtle cross-fade when switching between the console and chat views */
   @view-transition{
     navigation: auto;
@@ -91,6 +115,7 @@
     max-width: 1180px;
     margin: 0 auto;
     padding: 0 28px;
+    position: relative;
   }
 
   /* film-grain texture, applied over everything, very low opacity */
@@ -243,6 +268,7 @@
   /* ---------- HERO ---------- */
   .hero{
     padding: 76px 0 40px;
+    position: relative;
   }
   .eyebrow{
     font-family:'JetBrains Mono', monospace;
@@ -1069,11 +1095,299 @@
     }
   }
 
+  /* ================================================================
+     SUPERNOVA — neubrutalist pop-art (fourth mode)
+     ================================================================ */
+
+  /* kill the ambient gradient + grain from the base theme; this mode
+     gets its atmosphere from the aurora blobs + halftone dots instead */
+  html[data-theme="supernova"] body{ background-image: none; }
+  html[data-theme="supernova"] body::after{ opacity: 0; }
+
+  /* halftone dot texture — classic Lichtenstein comic-print grain,
+     sitting above the aurora blobs but below all real content */
+  html[data-theme="supernova"] body::before{
+    content:'';
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: radial-gradient(var(--ink) 1.3px, transparent 1.3px);
+    background-size: 15px 15px;
+    opacity: 0.07;
+  }
+
+  /* floating aurora blobs — soft + blurred on purpose, a deliberate
+     contrast against the hard-edged stickers sitting on top of them */
+  .aurora-fx{
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    display: none;
+  }
+  html[data-theme="supernova"] .aurora-fx{ display: block; }
+  .aurora-fx span{
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(70px);
+    opacity: 0.5;
+  }
+  .aurora-fx .b1{ width: 440px; height: 440px; top: -140px; left: -120px; background: var(--amber); animation: auroraFloat1 19s ease-in-out infinite; }
+  .aurora-fx .b2{ width: 380px; height: 380px; top: 6%; right: -150px; background: var(--teal); animation: auroraFloat2 23s ease-in-out infinite; }
+  .aurora-fx .b3{ width: 320px; height: 320px; bottom: -120px; left: 18%; background: var(--pop-yellow); animation: auroraFloat3 17s ease-in-out infinite; }
+  .aurora-fx .b4{ width: 280px; height: 280px; bottom: 2%; right: 12%; background: var(--pop-purple); animation: auroraFloat1 21s ease-in-out infinite reverse; }
+  @keyframes auroraFloat1{ 0%,100%{ transform: translate(0,0) scale(1); } 50%{ transform: translate(55px,45px) scale(1.15); } }
+  @keyframes auroraFloat2{ 0%,100%{ transform: translate(0,0) scale(1); } 50%{ transform: translate(-55px,60px) scale(0.9); } }
+  @keyframes auroraFloat3{ 0%,100%{ transform: translate(0,0) scale(1); } 50%{ transform: translate(45px,-55px) scale(1.1); } }
+
+  /* flatten the shared radius token — brutalist cards want square
+     corners; a few standalone "sticker" chips opt back into pill shapes
+     further down for deliberate contrast */
+  html[data-theme="supernova"]{ --radius: 0px; }
+
+  html[data-theme="supernova"] header{
+    backdrop-filter: none;
+    background: var(--bg);
+    border-bottom: 3px solid var(--ink);
+  }
+  html[data-theme="supernova"] .brand svg{ filter: none; }
+  html[data-theme="supernova"] .brand svg rect,
+  html[data-theme="supernova"] .brand svg path{ stroke: var(--ink); }
+  html[data-theme="supernova"] .version-pill{
+    border: 2px solid var(--ink);
+    background: var(--pop-yellow);
+    color: var(--ink);
+  }
+
+  html[data-theme="supernova"] .announce{
+    background: var(--pop-yellow);
+    border-bottom: 3px solid var(--ink);
+  }
+  html[data-theme="supernova"] .announce strong{ color: var(--amber); text-decoration: underline; text-underline-offset: 2px; }
+
+  html[data-theme="supernova"] .eyebrow{ color: var(--ink); font-weight: 600; }
+  html[data-theme="supernova"] .eyebrow::before{
+    background: var(--amber);
+    border: 2px solid var(--ink);
+    box-shadow: none;
+  }
+
+  /* sticker-layered headline — the signature move. Base letterforms get
+     two hard (non-blurred) offset copies in the two ink colors; the
+     accent word swaps the gradient-text trick for a solid yellow fill
+     with a thick black stroke, like a die-cut sticker slapped over it. */
+  html[data-theme="supernova"] h1{
+    display: inline-block;
+    color: var(--ink);
+    text-shadow: 3px 3px 0 var(--teal), 6px 6px 0 var(--amber);
+    transform: rotate(-1.1deg);
+  }
+  html[data-theme="supernova"] h1 .accent{
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--pop-yellow);
+    -webkit-text-stroke: 3px var(--ink);
+    text-shadow: 4px 4px 0 var(--amber), 8px 8px 0 var(--ink);
+  }
+
+  /* comic starburst badge — a small "ZAP" sticker riffing on the
+     brand's zipper motif, pinned near the headline */
+  .zap-badge{ display: none; }
+  html[data-theme="supernova"] .zap-badge{
+    display: flex;
+    position: absolute;
+    top: 2px;
+    right: 28px;
+    width: 88px;
+    height: 88px;
+    align-items: center;
+    justify-content: center;
+    transform: rotate(-9deg);
+    animation: zapPulse 3.2s ease-in-out infinite;
+    z-index: 2;
+  }
+  html[data-theme="supernova"] .zap-outer,
+  html[data-theme="supernova"] .zap-inner{
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(50% 0%, 61% 15%, 75% 5%, 78% 22%, 95% 20%, 88% 38%, 100% 50%, 88% 62%, 95% 80%, 78% 78%, 75% 95%, 61% 85%, 50% 100%, 39% 85%, 25% 95%, 22% 78%, 5% 80%, 12% 62%, 0% 50%, 12% 38%, 5% 20%, 22% 22%, 25% 5%, 39% 15%);
+  }
+  html[data-theme="supernova"] .zap-outer{ background: var(--ink); }
+  html[data-theme="supernova"] .zap-inner{
+    inset: 6px;
+    background: var(--pop-yellow);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  html[data-theme="supernova"] .zap-text{
+    position: relative;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    transform: rotate(9deg);
+  }
+  @keyframes zapPulse{
+    0%, 100%{ transform: rotate(-9deg) scale(1); }
+    50%{ transform: rotate(-5deg) scale(1.07); }
+  }
+  @media (max-width: 860px){ html[data-theme="supernova"] .zap-badge{ display: none; } }
+
+  /* console — solid card, thick border, hard (unblurred) drop shadow */
+  html[data-theme="supernova"] .console-frame{
+    padding: 0;
+    background: none;
+    border: 4px solid var(--ink);
+    box-shadow: 10px 10px 0 var(--amber);
+  }
+  html[data-theme="supernova"] .console,
+  html[data-theme="supernova"] .chat-console{ background: var(--surface); }
+  html[data-theme="supernova"] .pane-left{ border-right: 3px solid var(--ink); }
+  @media (max-width: 860px){ html[data-theme="supernova"] .pane-left{ border-right: none; border-bottom: 3px solid var(--ink); } }
+  html[data-theme="supernova"] .pane-head,
+  html[data-theme="supernova"] .pane-foot{ border-color: var(--ink); background: var(--surface-2); }
+  html[data-theme="supernova"] .gutter{ border-right: 3px solid var(--ink); color: #a39d8c; }
+  html[data-theme="supernova"] .output-area{ border-top: 3px solid var(--ink); }
+  html[data-theme="supernova"] .stage{ border-bottom-color: rgba(13,13,13,0.12); }
+  html[data-theme="supernova"] .stage-num{ border-color: var(--ink); }
+  html[data-theme="supernova"] .stage.done .stage-num{ color: var(--ink); }
+
+  /* buttons — flat fill, thick outline, hard shadow that shrinks on
+     press so the sticker looks like it's being pushed into the page */
+  html[data-theme="supernova"] .zip-btn{
+    background: var(--amber);
+    color: #fff;
+    border: 3px solid var(--ink);
+    border-radius: 0;
+    box-shadow: 5px 5px 0 var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  html[data-theme="supernova"] .zip-btn::before{ display: none; }
+  html[data-theme="supernova"] .zip-btn:hover{ transform: translate(3px,3px); box-shadow: 2px 2px 0 var(--ink); background: var(--amber); }
+  html[data-theme="supernova"] .zip-btn:active{ transform: translate(5px,5px); box-shadow: 0 0 0 var(--ink); }
+  html[data-theme="supernova"] .zip-btn:disabled{ background: #e7e2d3; color: #8a8570; border-color: var(--ink); box-shadow: 5px 5px 0 var(--ink); transform: none; }
+
+  html[data-theme="supernova"] .download-btn{
+    border: 3px solid var(--ink);
+    border-radius: 0;
+    background: var(--teal);
+    color: var(--ink);
+    box-shadow: 5px 5px 0 var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
+  }
+  html[data-theme="supernova"] .download-btn:hover{ transform: translate(3px,3px); box-shadow: 2px 2px 0 var(--ink); background: var(--teal); }
+
+  html[data-theme="supernova"] .nav-cta{
+    border: 3px solid var(--ink);
+    border-radius: 0;
+    box-shadow: 4px 4px 0 var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .15s ease;
+  }
+  html[data-theme="supernova"] .nav-cta:hover{ border-color: var(--ink); transform: translate(2px,2px); box-shadow: 2px 2px 0 var(--ink); }
+
+  html[data-theme="supernova"] .icon-btn{
+    border: 3px solid var(--ink);
+    border-radius: 0;
+    box-shadow: 3px 3px 0 var(--ink);
+    color: var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
+  }
+  html[data-theme="supernova"] .icon-btn:hover{ border-color: var(--ink); color: var(--ink); transform: translate(2px,2px); box-shadow: 1px 1px 0 var(--ink); }
+  html[data-theme="supernova"] .icon-btn.active{ background: var(--pop-yellow); border-color: var(--ink); color: var(--ink); box-shadow: 3px 3px 0 var(--ink); }
+
+  /* hint chips + project pills keep their pill shape on purpose — one
+     rounded accent against a page of square-cut cards */
+  html[data-theme="supernova"] .hint button{
+    border: 2.5px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    color: var(--ink);
+    font-weight: 600;
+    transition: transform .12s ease, box-shadow .12s ease, background .15s ease;
+  }
+  html[data-theme="supernova"] .hint button:hover{ border-color: var(--ink); color: var(--ink); background: var(--pop-yellow); transform: translate(2px,2px); box-shadow: 1px 1px 0 var(--ink); }
+
+  html[data-theme="supernova"] .pill{
+    border: 2.5px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+    color: var(--ink);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .15s ease;
+  }
+  html[data-theme="supernova"] .pill:hover{ border-color: var(--ink); color: var(--ink); transform: translate(2px,2px); box-shadow: 1px 1px 0 var(--ink); }
+  html[data-theme="supernova"] .pill.accent{ background: var(--teal); color: var(--ink); }
+  html[data-theme="supernova"] .pill.warn{ background: var(--amber); color: #fff; }
+
+  html[data-theme="supernova"] .steps{ border: 3px solid var(--ink); background: var(--ink); }
+  html[data-theme="supernova"] .step{ background: var(--surface); transition: background .15s ease; }
+  html[data-theme="supernova"] .step:hover{ background: var(--pop-yellow); transform: none; }
+  html[data-theme="supernova"] .step-num{ color: var(--amber-dim); font-weight: 700; }
+  html[data-theme="supernova"] .divider svg line{ stroke: var(--ink); stroke-width: 3; }
+
+  html[data-theme="supernova"] .file-chip{
+    border: 2.5px solid var(--ink);
+    border-radius: 4px;
+    background: var(--teal);
+    color: var(--ink);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+  html[data-theme="supernova"] .attach-chip{
+    border: 2.5px solid var(--ink);
+    border-radius: 4px;
+    background: var(--pop-yellow);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+  html[data-theme="supernova"] .drop-overlay{
+    border: 3px dashed var(--ink);
+    background: rgba(255,244,225,0.96);
+    color: var(--ink);
+  }
+  html[data-theme="supernova"] .deploy-strip{
+    border-bottom: 3px solid var(--ink);
+    background: var(--pop-yellow);
+    color: var(--ink);
+  }
+  html[data-theme="supernova"] .deploy-dot{ background: var(--amber); box-shadow: 0 0 0 3px rgba(255,47,143,0.25); }
+
+  html[data-theme="supernova"] .msg-bubble{
+    border: 2.5px solid var(--ink);
+    border-radius: 5px;
+    box-shadow: 3px 3px 0 var(--ink);
+  }
+  html[data-theme="supernova"] .msg-assistant .msg-bubble{ background: var(--surface); }
+  html[data-theme="supernova"] .msg-user .msg-bubble{ background: rgba(0,194,255,0.16); }
+  html[data-theme="supernova"] .msg-bubble.error{ background: rgba(255,49,49,0.12); border-color: var(--ink); color: var(--error); }
+  html[data-theme="supernova"] .msg-avatar{ border: 2px solid var(--ink); border-radius: 6px; }
+  html[data-theme="supernova"] .empty-state svg{ color: var(--ink); }
+
+  html[data-theme="supernova"] .zipper-pull{
+    border: 3px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--ink);
+    background: var(--pop-yellow);
+  }
+  html[data-theme="supernova"] .zipper-teeth i.zipped{ border-top-color: var(--amber); }
+
+  html[data-theme="supernova"] ::selection{ background: var(--pop-yellow); color: var(--ink); }
+  html[data-theme="supernova"] ::-webkit-scrollbar{ width: 10px; height: 10px; }
+  html[data-theme="supernova"] ::-webkit-scrollbar-track{ background: var(--surface-2); }
+  html[data-theme="supernova"] ::-webkit-scrollbar-thumb{ background: var(--amber); border: 2px solid var(--ink); border-radius: 0; }
+
+  @media (prefers-reduced-motion: reduce){
+    .aurora-fx span,
+    html[data-theme="supernova"] .zap-badge{
+      animation: none !important;
+    }
+  }
+
 </style>
 </head>
 <body>
 
 <div class="grid-fx" aria-hidden="true"></div>
+<div class="aurora-fx" aria-hidden="true"><span class="b1"></span><span class="b2"></span><span class="b3"></span><span class="b4"></span></div>
 
 <div class="announce" id="announce">
   <div class="wrap">
@@ -1098,10 +1412,11 @@
       <a href="#" data-view="chat" class="nav-link-item">Chat with code</a>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
-      <button class="nav-cta theme-toggle" id="themeToggle" type="button" title="Cycle dark / light / overclock mode" aria-label="Cycle dark / light / overclock mode">
+      <button class="nav-cta theme-toggle" id="themeToggle" type="button" title="Cycle dark / light / overclock / supernova mode" aria-label="Cycle dark / light / overclock / supernova mode">
         <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" style="display:none;"><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.4M12 19.1v2.4M4.5 12H2.1M21.9 12h-2.4M5.6 5.6l1.7 1.7M16.7 16.7l1.7 1.7M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
         <svg id="themeIconBolt" viewBox="0 0 24 24" fill="none" style="display:none;"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg id="themeIconStar" viewBox="0 0 24 24" fill="none" style="display:none;"><path d="M12 2.5l2.1 5.6 5.9.5-4.5 3.9 1.4 5.8L12 15.3l-5 3-0.1-5.8-4.4-3.9 5.9-.6L12 2.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
       </button>
       <button class="nav-cta" id="endSessionBtn" type="button" style="border-color:rgba(255,107,94,0.35); color:var(--error); cursor:pointer;" title="Clear the current project, chat, and prompt to start fresh">↺ end session</button>
     </div>
@@ -1114,6 +1429,10 @@
   <section class="hero" id="top">
     <div class="wrap">
       <div class="eyebrow reveal reveal-1">PROMPT&nbsp;→&nbsp;PROJECT&nbsp;→&nbsp;PROJECT.ZIP</div>
+      <div class="zap-badge" aria-hidden="true">
+        <div class="zap-outer"></div>
+        <div class="zap-inner"><span class="zap-text">ZIP!</span></div>
+      </div>
       <h1 class="reveal reveal-2">Describe the app.<br>Download the <span class="accent">.zip</span>.</h1>
       <p class="sub reveal reveal-3">Type what you want built, optionally attach a reference image. ziporg.ai plans it, writes every file, and zips the finished project so you can pull it straight into your editor — then chat with it to keep iterating.</p>
 
@@ -1349,14 +1668,16 @@
   const themeIconMoon = document.getElementById('themeIconMoon');
   const themeIconSun = document.getElementById('themeIconSun');
   const themeIconBolt = document.getElementById('themeIconBolt');
-  const THEME_ORDER = ['dark', 'light', 'cyber'];
-  const THEME_LABEL = { dark: 'dark', light: 'light', cyber: 'overclock' };
+  const themeIconStar = document.getElementById('themeIconStar');
+  const THEME_ORDER = ['dark', 'light', 'cyber', 'supernova'];
+  const THEME_LABEL = { dark: 'dark', light: 'light', cyber: 'overclock', supernova: 'supernova' };
 
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     themeIconMoon.style.display = theme === 'dark' ? 'block' : 'none';
     themeIconSun.style.display = theme === 'light' ? 'block' : 'none';
     themeIconBolt.style.display = theme === 'cyber' ? 'block' : 'none';
+    themeIconStar.style.display = theme === 'supernova' ? 'block' : 'none';
     themeToggle.title = 'Cycle theme (currently ' + THEME_LABEL[theme] + ')';
     themeToggle.setAttribute('aria-label', themeToggle.title);
     try { localStorage.setItem('ziporgTheme', theme); } catch (_) {}
