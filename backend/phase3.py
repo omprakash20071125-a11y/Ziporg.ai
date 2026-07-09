@@ -109,7 +109,7 @@ class all_files(BaseModel):
 class State(TypedDict):
     prompt: str
     reference_image_path: str
-    new_request: str
+    new_request : str
     overall_image_design: PageSpec | None
     image_description: str
     research_needed: Literal["true", "false"]
@@ -122,23 +122,7 @@ class State(TypedDict):
 # Nodes
 # ---------------------------------------------------------------------------
 def query_optimizer(state: State) -> State:
-    prompt = PromptTemplate(
-        template="""You are an expert software engineer and project planner.
-        Your ONLY job is to take the Raw User Request below and turn it into a clear, concise, and optimized engineering prompt.
-        Do NOT write an introduction. Do NOT say "Okay, I understand". Output ONLY the clean, optimized prompt text.
-
-        ---
-        RAW USER REQUEST:
-        {query}
-        ---
-
-        OPTIMIZED ENGINEERING PROMPT""",
-        input_variables=['query']
-    )
-    chain = prompt | model | StrOutputParser()
-    response = chain.invoke({'query': state['prompt']})
-    print("Finished query optimizer")
-    return {'new_request': response}
+    return {'new_request': state['prompt']}
 
 
 def get_image_schema(state: State) -> State:
@@ -549,4 +533,3 @@ def run_pipeline(prompt: str,reference_image_path:str) -> dict[str, str]:
     """Runs the graph for a given prompt and returns {filename: code}."""
     result = workflow.invoke({'prompt': prompt,'reference_image_path':reference_image_path})
     return result['file_code']
-
