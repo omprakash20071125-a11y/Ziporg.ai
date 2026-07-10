@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
+from langchain_openrouter import ChatOpenRouter
 from langchain_core.prompts import PromptTemplate
 from typing import TypedDict, List, Literal
 from langchain_core.output_parsers import StrOutputParser
@@ -19,7 +20,6 @@ model = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=os.environ.get("GOOGLE_API_KEY"),
 )
-
 class DesignToken(BaseModel):
     name: str
     hex: str
@@ -125,6 +125,7 @@ class State(TypedDict):
     file_code: dict[str, str]
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
+coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free")
 
 def query_optimizer(state: State) -> State:
     prompt = PromptTemplate(
@@ -626,7 +627,7 @@ def code_generator(state: State) -> State:
             'design_direction', 'code'
         ]
     )
-    chain = prompt | model | StrOutputParser()
+    chain = prompt | coding_model | StrOutputParser()
 
     for f in ordered_files:
         dep_context = "\n\n".join([
@@ -652,22 +653,6 @@ def code_generator(state: State) -> State:
         time.sleep(2)
 
     return {'file_code': code_for_each_file}
-
-
-def writer(state: State) -> State:
-    url = "/Users/omprakashgupta/Desktop/ai code generator and reviewer"
-    runid = str(uuid.uuid4())
-
-    path = os.path.join(url, runid)
-    os.makedirs(path, exist_ok=True)
-
-    for filename, content in state['file_code'].items():
-        file_path = os.path.join(path, filename)
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "w") as f:
-            f.write(content)
-    return state
-
 
 # ---------------------------------------------------------------------------
 # Graph wiring
