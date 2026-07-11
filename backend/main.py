@@ -52,7 +52,7 @@ graph_app = build_graph()
 # ---------------------------------------------------------------------
 # Limits (tune these as you like — these are sane free-tier defaults)
 # ---------------------------------------------------------------------
-MAX_PROMPT_LEN = 4000            # characters
+MAX_PROMPT_LEN = 5000    # characters
 MAX_QUERY_LEN = 2000             # characters
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -167,7 +167,7 @@ async def project_chat(payload: ChatPayload):
         if is_rate_limit_error(e):
             raise HTTPException(status_code=503, detail=GENERIC_ERROR)
         raise HTTPException(status_code=500, detail=GENERIC_ERROR)
-
+    print('response_generated')
     return {
         "thread_id": payload.thread_id,
         "response": result.get("response", "I couldn't generate an answer for that."),
@@ -269,7 +269,7 @@ def generate(
         raise HTTPException(status_code=500, detail=GENERIC_ERROR)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
-
+    print('files_generated')
     return FileResponse(
         zip_path,
         filename=f"project_{thread_id}.zip",
