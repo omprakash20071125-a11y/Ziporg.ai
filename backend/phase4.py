@@ -640,7 +640,7 @@ def get_image_schema(state: State) -> State:
         {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
 
-    structured_model = model.with_structured_output(PageSpec)
+    structured_model = groq_model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     return {'overall_image_design': result}
 
@@ -705,7 +705,7 @@ Set research_needed = "false" if the request:
 Respond with only "true" or "false".""",
         input_variables=['query']
     )
-    chain = prompt | model.with_structured_output(research_need)
+    chain = prompt | groq_model.with_structured_output(research_need)
     response = chain.invoke({'query': state['new_request']})
     time.sleep(4)
     return {'research_needed': response.research_needed}
@@ -1023,7 +1023,7 @@ def component_spec_node(state: State) -> State:
         'screens', 'key_elements', 'colors', 'typography', 'spacing_scale', 'border_radius',
         'icon_style', 'personality', 'design_keywords'
     ])
-    struct_model = model.with_structured_output(ComponentSpec)
+    struct_model = groq_model.with_structured_output(ComponentSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'screens': screens,
