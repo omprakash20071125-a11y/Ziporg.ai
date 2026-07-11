@@ -620,7 +620,7 @@ def query_optimizer(state: State) -> State:
     )
     chain = prompt | groq_model | StrOutputParser()
     response = chain.invoke({'query': state['prompt']})
-    time.sleep(4)
+    print('query_optimized')
     return {'new_request': response}
 
 
@@ -642,6 +642,7 @@ def get_image_schema(state: State) -> State:
 
     structured_model = groq_model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
+    print('schema_fetched')
     return {'overall_image_design': result}
 
 
@@ -673,7 +674,7 @@ def format_design_schema(state: State) -> State:
             if comp.notes:
                 lines.append(f"    Notes: {comp.notes}")
         lines.append("")
-
+    print('front_design_schema_complete')
     return {'image_description': "\n".join(lines)}
 
 
@@ -707,7 +708,6 @@ Respond with only "true" or "false".""",
     )
     chain = prompt | groq_model.with_structured_output(research_need)
     response = chain.invoke({'query': state['new_request']})
-    time.sleep(4)
     return {'research_needed': response.research_needed}
 
 
@@ -791,6 +791,7 @@ exactly this schema:
         'image_summary': state['image_description'],
         'research_summary': state['research_context']
     })
+    print('requirements_generated')
     return {'research': response}
 
 
@@ -893,6 +894,7 @@ exactly this schema:
         'research_summary': req.research_summary,
         'design_summary': req.design_summary,
     })
+    print('product_spec_generated')
     return {'product_specification': response}
 
 
@@ -922,7 +924,7 @@ def design_system(state: State) -> State:
         'differentiation': product.differentiation,
         'branding_summary': product.branding_summary,
     })
-    time.sleep(4)
+    print('design_system_generated')
     return {'design_system': response}
 
 
@@ -948,6 +950,7 @@ Shadows:
 Icon style: {ds.icon_style}
 Animation style: {ds.animation_style}
 Grid system: {ds.grid_system}"""
+    print('formated_design_system')
     return {'design_system_summary': summary}
 
 
@@ -976,7 +979,7 @@ def ux_spec_node(state: State) -> State:
         'emotional_goal': product.emotional_goal,
         'query': state['new_request'],
     })
-    time.sleep(4)
+    print('ux_generated')
     return {'ux_spec': response}
 
 
@@ -1006,6 +1009,7 @@ Responsive behavior: {ux.responsive_behavior}
 Accessibility requirements: {ux.accessibility_requirements}
 Empty states: {ux.empty_states}
 Error handling UX: {ux.error_handling_ux}"""
+    print('format_ux__spec_generated')
     return {'ux_summary': summary}
 
 
@@ -1036,7 +1040,7 @@ def component_spec_node(state: State) -> State:
         'personality': product.personality if product else "",
         'design_keywords': product.design_keywords if product else [],
     })
-    time.sleep(4)
+    print('component_ux__spec_generated')
     return {'component_spec': response}
 
 
@@ -1057,6 +1061,7 @@ def format_component_spec(state: State) -> State:
 Reuse strategy: {cs.reuse_strategy}
 Components:
 {components}"""
+    print('format_component_spec_generated')
     return {'component_summary': summary}
 
 
@@ -1084,7 +1089,7 @@ def interaction_spec_node(state: State) -> State:
         'personality': product.personality if product else "",
         'emotional_goal': product.emotional_goal if product else "",
     })
-    time.sleep(4)
+    print('interaction_spec_node_done')
     return {'interaction_spec': response}
 
 
@@ -1104,6 +1109,7 @@ Loading states: {ins.loading_states}
 Error states: {ins.error_states}
 Transition style: {ins.transition_style}
 Gesture support: {ins.gesture_support}"""
+    print('formated_interaction_spec')
     return {'interaction_summary': summary}
 
 
@@ -1139,6 +1145,7 @@ design_system (established tokens — stay within this palette/type, do not inve
         'image_description': state['image_description'],
         'design_system_summary': state.get('design_system_summary', ''),
     })
+    print('design_direction_generated')
     return {'design_direction': response}
 
 
@@ -1159,7 +1166,7 @@ Body font: {dd.body_font}
 Layout concept: {dd.layout_concept}
 Copy voice: {dd.copy_voice}
 Avoided clichés: {dd.avoided_cliches}"""
-
+    print('format_design_direction')
     return {'design_direction_summary': summary}
 
 
@@ -1308,7 +1315,7 @@ interaction_summary: {interaction_summary}""",
         'component_summary': state.get('component_summary', ''),
         'interaction_summary': state.get('interaction_summary', ''),
     })
-    time.sleep(4)
+    print('planner_done')
     return {'fileplans': response}
 
 
@@ -1494,7 +1501,7 @@ def code_generator(state: State) -> State:
         })
 
         code_for_each_file[f.filename] = response
-        time.sleep(2)
+        print('code_generator_done')
 
     return {'file_code': code_for_each_file}
 
