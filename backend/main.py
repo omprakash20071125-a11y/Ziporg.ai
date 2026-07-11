@@ -7,7 +7,7 @@ import shutil
 from typing import Optional
 from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -52,10 +52,29 @@ graph_app = build_graph()
 # ---------------------------------------------------------------------
 # Limits (tune these as you like — these are sane free-tier defaults)
 # ---------------------------------------------------------------------
-MAX_PROMPT_LEN = 5000    # characters
-MAX_QUERY_LEN = 2000             # characters
-MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_PROMPT_LEN = 5000             # characters
+MAX_QUERY_LEN = 2000               # characters
+MAX_IMAGE_SIZE = 5 * 1024 * 1024   # 5 MB
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+GENERIC_ERROR = "Can't generate a response at this moment due to some technical issue. Please try again shortly."
+
+# ---------------------------------------------------------------------
+# In-memory job store for /generate background jobs.
+#
+# jobs[job_id] = {
+#     "status": "running" | "done" | "error",
+#     "zip_path": str | None,
+#     "detail": str | None,
+# }
+#
+# NOTE: This is process-local memory. If Railway restarts your instance
+# or runs multiple workers/replicas, jobs won't be visible across them.
+# For a single-instance deployment (the common case on Railway's free/
+# hobby tiers) this is fine. If you scale to multiple workers later,
+# swap this dict for Redis or a database table.
+# ---------------------------------------------------------------------
+jobs: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------
@@ -92,9 +111,6 @@ def safe_join(base: str, filename: str) -> str:
     if not (target == base_abs or target.startswith(base_abs + os.sep)):
         raise ValueError(f"Unsafe file path rejected: {filename}")
     return target
-
-
-GENERIC_ERROR = "Can't generate a response at this moment due to some technical issue. Please try again shortly."
 
 
 # ---------------------------------------------------------------------
@@ -167,7 +183,7 @@ async def project_chat(payload: ChatPayload):
         if is_rate_limit_error(e):
             raise HTTPException(status_code=503, detail=GENERIC_ERROR)
         raise HTTPException(status_code=500, detail=GENERIC_ERROR)
-    print('response_generated')
+
     return {
         "thread_id": payload.thread_id,
         "response": result.get("response", "I couldn't generate an answer for that."),
@@ -175,14 +191,76 @@ async def project_chat(payload: ChatPayload):
 
 
 # =====================================================================
-# 2. THE GENERATION ENDPOINT (Triggers the actual codebase build)
+# 2. GENERATION — background job + polling
 # =====================================================================
+
+def run_generation_job(
+    job_id: str,
+    prompt: str,
+    reference_image_path: str,
+    image_tmp_dir: Optional[str],
+):
+    """Runs the (slow) pipeline in a background thread and stores the
+    result/error in `jobs`. This is what lets /generate return instantly
+    instead of holding the HTTP connection open for the whole pipeline."""
+    try:
+        file_code = run_pipeline(prompt, reference_image_path)
+    except Exception as e:
+        logger.error(f"Pipeline failed [job={job_id}]: {e}", exc_info=True)
+        detail = GENERIC_ERROR
+        if is_rate_limit_error(e):
+            detail = GENERIC_ERROR  # keep message generic either way to the client
+        jobs[job_id] = {"status": "error", "zip_path": None, "detail": detail}
+        return
+    finally:
+        if image_tmp_dir:
+            shutil.rmtree(image_tmp_dir, ignore_errors=True)
+
+    if not file_code:
+        jobs[job_id] = {
+            "status": "error",
+            "zip_path": None,
+            "detail": "No files were generated. Please try again.",
+        }
+        return
+
+    work_dir = tempfile.mkdtemp()
+    try:
+        for filename, content in file_code.items():
+            try:
+                fpath = safe_join(work_dir, filename)
+            except ValueError:
+                logger.warning(f"Rejected unsafe filename from pipeline [job={job_id}]: {filename}")
+                continue  # skip this file rather than failing the whole generation
+
+            os.makedirs(os.path.dirname(fpath) or work_dir, exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(str(content))
+
+        zip_base = os.path.join(tempfile.gettempdir(), job_id)
+        zip_path = shutil.make_archive(zip_base, "zip", work_dir)
+
+        jobs[job_id] = {"status": "done", "zip_path": zip_path, "detail": None}
+
+    except Exception as e:
+        logger.error(f"Zip creation failed [job={job_id}]: {e}", exc_info=True)
+        jobs[job_id] = {"status": "error", "zip_path": None, "detail": GENERIC_ERROR}
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 @app.post("/generate")
 def generate(
+    background_tasks: BackgroundTasks,
     thread_id: str = Form(...),  # frontend generates this and reuses it for later /chat calls
     prompt: str = Form(...),
     reference_image: Optional[UploadFile] = File(None),
 ):
+    """Validates input, saves any reference image, enqueues the pipeline as
+    a background task, and returns a job_id IMMEDIATELY — it does not wait
+    for the pipeline to finish. The frontend polls /generate/status/{job_id}
+    and then downloads from /generate/download/{job_id} once done."""
+
     # -----------------------------
     # Validate prompt
     # -----------------------------
@@ -228,50 +306,42 @@ def generate(
             raise HTTPException(status_code=500, detail=GENERIC_ERROR)
 
     # -----------------------------
-    # Run AI pipeline
+    # Enqueue the pipeline as a background job and return right away
     # -----------------------------
-    try:
-        file_code = run_pipeline(prompt, reference_image_path)
-    except Exception as e:
-        logger.error(f"Pipeline failed [thread={thread_id}]: {e}", exc_info=True)
-        if is_rate_limit_error(e):
-            raise HTTPException(status_code=503, detail=GENERIC_ERROR)
-        raise HTTPException(status_code=500, detail=GENERIC_ERROR)
-    finally:
-        if image_tmp_dir:
-            shutil.rmtree(image_tmp_dir, ignore_errors=True)
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "running", "zip_path": None, "detail": None}
 
-    if not file_code:
-        raise HTTPException(status_code=500, detail="No files were generated. Please try again.")
+    background_tasks.add_task(
+        run_generation_job, job_id, prompt, reference_image_path, image_tmp_dir
+    )
 
-    # -----------------------------
-    # Write files (path-traversal safe)
-    # -----------------------------
-    work_dir = tempfile.mkdtemp()
-    try:
-        for filename, content in file_code.items():
-            try:
-                fpath = safe_join(work_dir, filename)
-            except ValueError as e:
-                logger.warning(f"Rejected unsafe filename from pipeline [thread={thread_id}]: {filename}")
-                continue  # skip this file rather than failing the whole generation
+    return {"job_id": job_id, "status": "running"}
 
-            os.makedirs(os.path.dirname(fpath) or work_dir, exist_ok=True)
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(str(content))
 
-        run_id = str(uuid.uuid4())
-        zip_base = os.path.join(tempfile.gettempdir(), run_id)
-        zip_path = shutil.make_archive(zip_base, "zip", work_dir)
+@app.get("/generate/status/{job_id}")
+def generate_status(job_id: str):
+    """Lightweight poll endpoint — the frontend calls this every few
+    seconds. Always returns fast regardless of how long the underlying
+    pipeline takes."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job_id.")
+    return {"status": job["status"], "detail": job["detail"]}
 
-    except Exception as e:
-        logger.error(f"Zip creation failed [thread={thread_id}]: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=GENERIC_ERROR)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-    print('files_generated')
+
+@app.get("/generate/download/{job_id}")
+def generate_download(job_id: str, thread_id: str = "project"):
+    """Called once /generate/status/{job_id} reports status == 'done'."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job_id.")
+    if job["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"Job is not finished yet (status: {job['status']}).")
+    if not job["zip_path"] or not os.path.exists(job["zip_path"]):
+        raise HTTPException(status_code=410, detail="Result is no longer available — please generate again.")
+
     return FileResponse(
-        zip_path,
+        job["zip_path"],
         filename=f"project_{thread_id}.zip",
         media_type="application/zip",
     )
