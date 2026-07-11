@@ -3,87 +3,27 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langchain_openrouter import ChatOpenRouter
 from langchain_core.prompts import PromptTemplate
+from typing import TypedDict, List, Literal
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage
-from typing import TypedDict, List, Literal, Callable, TypeVar, Any
-from pydantic import BaseModel, Field
-from dotenv import load_dotenv
 import time
 import base64
 import os
-import logging
-
+from pydantic import BaseModel, Field
 from phase2_planner import research
+from dotenv import load_dotenv
+import uuid
 
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("ziporg.pipeline")
 
 model = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=os.environ.get("GOOGLE_API_KEY"),
 )
-groq_model = ChatGroq(model="llama-3.3-70b-versatile")
-coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free")
-
-
-# ---------------------------------------------------------------------------
-# Retry wrapper — every LLM call in this file goes through this instead of a
-# bare .invoke(). Exponential backoff, bounded attempts, real error surfaced
-# if all retries are exhausted (never silently swallowed).
-# ---------------------------------------------------------------------------
-T = TypeVar("T")
-
-
-def invoke_with_retry(
-    chain: Any,
-    payload: dict,
-    node_name: str,
-    max_attempts: int = 3,
-    base_delay: float = 2.0,
-) -> T:
-    last_err: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return chain.invoke(payload)
-        except Exception as e:  # noqa: BLE001 - we want to catch and retry broadly here
-            last_err = e
-            delay = base_delay * (2 ** (attempt - 1))
-            logger.warning(
-                "[%s] attempt %d/%d failed: %s — retrying in %.1fs",
-                node_name, attempt, max_attempts, e, delay,
-            )
-            if attempt < max_attempts:
-                time.sleep(delay)
-    logger.error("[%s] all %d attempts failed", node_name, max_attempts)
-    raise RuntimeError(f"{node_name} failed after {max_attempts} attempts") from last_err
-
-
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
-class ResearchSpec(BaseModel):
-    project_name: str = Field(description="Short working name for the project")
-    project_type: str = Field(description="e.g. 'expense tracker', 'landing page', 'CLI tool'")
-    project_summary: str = Field(description="2-3 sentence summary of what this product is")
-    target_users: str = Field(description="Who this is built for")
-    primary_goal: str = Field(description="The single most important job this product does")
-    core_features: List[str] = Field(description="Must-have features, derived from user query + image + research")
-    optional_features: List[str] = Field(default_factory=list, description="Nice-to-have features research suggests, only if they naturally fit")
-    functional_requirements: List[str] = Field(description="What the product must do")
-    non_functional_requirements: List[str] = Field(default_factory=list, description="Performance, accessibility, reliability expectations")
-    user_constraints: List[str] = Field(default_factory=list, description="Explicit constraints the user stated")
-    research_recommendations: List[str] = Field(default_factory=list, description="Relevant best practices pulled from research")
-    design_reference: str = Field(description="Summary of layout, visual style, typography, spacing, color direction, interaction style, responsiveness, major UI components")
-    quality_goals: List[str] = Field(default_factory=list, description="What 'done well' looks like for this project")
-
-
 class DesignToken(BaseModel):
     name: str
     hex: str
     usage: str
-
 
 class DesignDirection(BaseModel):
     subject_and_audience: str = Field(description="One sentence: what this actually is, for whom")
@@ -94,7 +34,6 @@ class DesignDirection(BaseModel):
     layout_concept: str = Field(description="One-sentence layout description, not a template name")
     copy_voice: str = Field(description="Tone/register for all written content, e.g. 'plain, active-voice, no filler'")
     avoided_cliches: str = Field(description="Explicitly name which generic AI-design patterns were rejected and why")
-
 
 class SectionBBox(BaseModel):
     x: float = Field(description="Left edge, as % of image width (0-100)")
@@ -110,7 +49,7 @@ class ObservedColor(BaseModel):
 
 class Typography(BaseModel):
     role: str = Field(description="e.g. 'h1', 'h2', 'body', 'caption', 'button label'")
-    relative_size: str = Field(description="largest | large | medium | small | smallest")
+    relative_size: str = Field(description="largest | large | medium | small | smallest — relative to other text on the page")
     weight: str = Field(description="bold | semibold | regular | light")
     style_notes: str = Field(description="uppercase, italic, letter-spacing look, underline, etc. — only if visible")
 
@@ -146,15 +85,20 @@ class PageSpec(BaseModel):
 class research_need(BaseModel):
     research_needed: Literal["true", "false"] = Field(description="whether the research is needed or not")
 
-
 class fileplan(BaseModel):
     filename: str = Field(description="exact filename with extension")
     purpose: str = Field(description="one clear sentence on what this file does")
-    responsibilities: List[str] = Field(description="Specific things this file handles and nothing else")
-    depends_on: List[str] = Field(default_factory=list, description="Filenames this file imports, links to, or requires")
+    responsibilities: List[str] = Field(
+        description="Specific things this file handles and nothing else — including exact "
+                    "text, colors, and layout details from design_schema/design_direction where relevant"
+    )
+    depends_on: List[str] = Field(
+        default_factory=list,
+        description="Filenames this file imports, links to, or requires (empty list if none)",
+    )
     generate_order: int = Field(description="Integer starting from 1. Lower number = generate first.")
     language: str = Field(description="Language this file should be written in")
-    package: str = Field(default="", description="Package needed for this file, if any")
+    package: str = Field(default="", description="Package needed for this file, if any (empty string if none)")
 
 
 class all_files(BaseModel):
@@ -176,40 +120,38 @@ class State(TypedDict):
     design_direction_summary: str
     image_description: str
     research_needed: Literal["true", "false"]
-    research: ResearchSpec | None
-    research_summary: str
     research_context: str
     fileplans: all_files
     file_code: dict[str, str]
 
+groq_model = ChatGroq(model="llama-3.3-70b-versatile")
+coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free")
 
-# ---------------------------------------------------------------------------
-# Nodes
-# ---------------------------------------------------------------------------
 def query_optimizer(state: State) -> State:
     prompt = PromptTemplate(
         template="""You are an expert software engineer and project planner.
-Your ONLY job is to take the Raw User Request below and turn it into a clear, concise, and optimized engineering prompt.
-Do NOT write an introduction. Do NOT say "Okay, I understand". Output ONLY the clean, optimized prompt text.
+        Your ONLY job is to take the Raw User Request below and turn it into a clear, concise, and optimized engineering prompt.
+        Do NOT write an introduction. Do NOT say "Okay, I understand". Output ONLY the clean, optimized prompt text.
 
----
-RAW USER REQUEST:
-{query}
----
+        ---
+        RAW USER REQUEST:
+        {query}
+        ---
 
-OPTIMIZED ENGINEERING PROMPT""",
-        input_variables=["query"],
+        OPTIMIZED ENGINEERING PROMPT""",
+        input_variables=['query']
     )
     chain = prompt | groq_model | StrOutputParser()
-    response = invoke_with_retry(chain, {"query": state["prompt"]}, "query_optimizer")
-    return {"new_request": response}
+    response = chain.invoke({'query': state['prompt']})
+    time.sleep(4)
+    return {'new_request': response}
 
 
 def get_image_schema(state: State) -> State:
-    path = state.get("reference_image_path", "")
+    path = state.get('reference_image_path', '')
 
     if not path or not os.path.exists(path):
-        return {"overall_image_design": None}
+        return {'overall_image_design': None}
 
     with open(path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -218,27 +160,23 @@ def get_image_schema(state: State) -> State:
 
     message = HumanMessage(content=[
         {"type": "text", "text": "Give me the complete detail of this image — every section, component, text, color, and layout detail, following the schema."},
-        {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"},
+        {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
 
     structured_model = model.with_structured_output(PageSpec)
-    try:
-        result = invoke_with_retry(structured_model, [message], "get_image_schema")
-    except RuntimeError:
-        logger.error("get_image_schema failed permanently — continuing without a reference image")
-        return {"overall_image_design": None}
-    return {"overall_image_design": result}
+    result = structured_model.invoke([message])
+    return {'overall_image_design': result}
 
 
 def format_design_schema(state: State) -> State:
-    schema = state.get("overall_image_design")
+    schema = state.get('overall_image_design')
     if not schema:
-        return {"image_description": "No reference image was provided."}
+        return {'image_description': "No reference image was provided."}
 
     lines = [
         f"Overall layout: {schema.overall_layout}",
         f"Page background: {schema.page_background.hex_estimate} ({schema.page_background.usage})",
-        "",
+        ""
     ]
     for section in schema.sections:
         lines.append(f"SECTION [{section.section_id}] - type: {section.section_type}")
@@ -259,7 +197,7 @@ def format_design_schema(state: State) -> State:
                 lines.append(f"    Notes: {comp.notes}")
         lines.append("")
 
-    return {"image_description": "\n".join(lines)}
+    return {'image_description': "\n".join(lines)}
 
 
 def call_researchor_or_not(state: State) -> State:
@@ -277,33 +215,33 @@ before it can be planned and built accurately.
 
 Set research_needed = "true" if the request:
 - Explicitly asks to "clone", "replicate", "copy", or build something "like" or "inspired by" a specific named
-  real product, company, or website.
+  real product, company, or website (e.g. "inspired by Vercel's dashboard", "clone Stripe's homepage").
 - References specific real-world UI/UX patterns, layouts, or branding that would require knowing what that
   actual site looks like to be built accurately.
 - Mentions a specific real API, library, or service whose current behavior/structure needs to be verified.
 
 Set research_needed = "false" if the request:
-- Is a generic, self-contained build with no reference to a specific real external product.
+- Is a generic, self-contained build with no reference to a specific real external product (e.g. "build a
+  calculator", "build a to-do app").
 - Describes its own requirements fully without needing to know how an external site/product works.
 
 Respond with only "true" or "false".""",
-        input_variables=["query"],
+        input_variables=['query']
     )
     chain = prompt | model.with_structured_output(research_need)
-    response = invoke_with_retry(chain, {"query": state["new_request"]}, "call_researchor_or_not")
-    return {"research_needed": response.research_needed}
+    response = chain.invoke({'query': state['new_request']})
+    time.sleep(4)
+    return {'research_needed': response.research_needed}
 
 
 def checker(state: State) -> State:
-    is_research_needed = str(state.get("research_needed", "")).strip().lower()
+    is_research_needed = str(state.get('research_needed', '')).strip().lower()
     if is_research_needed == "true":
-        try:
-            research_result = research.invoke({"messages": [HumanMessage(content=state["new_request"])]})
-        except Exception as e:  # noqa: BLE001
-            logger.warning("research sub-graph failed: %s — continuing with empty research_context", e)
-            return {"research_context": ""}
-        return {"research_context": research_result.get("research_context", "")}
-    return {"research_context": ""}
+        research_result = research.invoke({
+            'messages': [HumanMessage(content=state['new_request'])]
+        })
+        return {'research_context': research_result.get('research_context', '')}
+    return {'research_context': ''}
 
 
 def design_direction(state: State) -> State:
@@ -327,27 +265,23 @@ user_query: {query}
 research_report: {research_context}
 design_schema (if a reference image was provided — treat as ground truth for anything it covers): {image_description}
 """,
-        input_variables=["query", "research_context", "image_description"],
+        input_variables=['query', 'research_context', 'image_description']
     )
     struct_model = model.with_structured_output(DesignDirection)
     chain = prompt | struct_model
-    response = invoke_with_retry(
-        chain,
-        {
-            "query": state["new_request"],
-            "research_context": state["research_context"],
-            "image_description": state["image_description"],
-        },
-        "design_direction",
-    )
-    return {"design_direction": response}
+    response = chain.invoke({
+        'query': state['new_request'],
+        'research_context': state['research_context'],
+        'image_description': state['image_description'],
+    })
+    return {'design_direction': response}
 
 
 def format_design_direction(state: State) -> State:
-    dd = state.get("design_direction")
+    dd = state.get('design_direction')
 
     if not dd:
-        return {"design_direction_summary": "No design direction was generated."}
+        return {'design_direction_summary': "No design direction was generated."}
 
     palette = "\n".join(f"  - {t.name}: {t.hex} ({t.usage})" for t in dd.palette)
 
@@ -361,153 +295,50 @@ Layout concept: {dd.layout_concept}
 Copy voice: {dd.copy_voice}
 Avoided clichés: {dd.avoided_cliches}"""
 
-    return {"design_direction_summary": summary}
-
-
-def research_gather(state: State) -> State:
-    """Merges the optimized query, research_context, and image_description into
-    one clean ResearchSpec. This is the single source of truth for WHAT the
-    product should be — planner and code_generator both consume its formatted
-    summary alongside design_direction_summary."""
-    prompt = PromptTemplate(
-        template="""You are a Senior Software Requirements Engineer.
-
-Your task is to combine three independent sources of information into one complete RequirementSpec.
-
-You are NOT allowed to generate code, file structures, software architecture, implementation details, or UI designs.
-
-Your responsibility is only to understand the project requirements and produce a single clean specification that every later AI agent can use.
-
---------------------------------------------------
-INPUT 1 : Optimized User Query
---------------------------------------------------
-{optimized_query}
-
---------------------------------------------------
-INPUT 2 : Research Report (external site/product findings, may be empty)
---------------------------------------------------
-{research_report}
-
---------------------------------------------------
-INPUT 3 : Image Analysis Specification (may say no reference image was provided)
---------------------------------------------------
-{image_spec}
-
---------------------------------------------------
-YOUR TASK
---------------------------------------------------
-Carefully analyze all three inputs. Merge them into one RequirementSpec.
-
-While merging:
-- Preserve every explicit user requirement.
-- Use the image specification to understand the intended layout, visual style, UX patterns and component organization.
-- Use the research report to improve the project with relevant industry best practices.
-- Remove duplicated information.
-- Resolve conflicting information intelligently.
-
-Priority order: 1. User Requirements  2. Image Analysis  3. Research Suggestions
-
-Never invent completely unrelated features. If research suggests useful optional features
-that naturally fit the project, include them under optional_features.
-
-The RequirementSpec should describe WHAT the application should be. It should NEVER
-describe HOW to implement it — do not mention HTML, CSS, JavaScript, frameworks, APIs,
-file structure, folder names, database schema, or code. Those are handled by later nodes.
-
-design_reference should summarize: layout, visual style, typography, spacing, color
-direction, interaction style, responsiveness, and major UI components.
-
-Return only the structured RequirementSpec.""",
-        input_variables=["optimized_query", "research_report", "image_spec"],
-    )
-    struct_model = model.with_structured_output(ResearchSpec)
-    chain = prompt | struct_model
-    response = invoke_with_retry(
-        chain,
-        {
-            "optimized_query": state["new_request"],
-            "research_report": state["research_context"],
-            "image_spec": state["image_description"],
-        },
-        "research_gather",
-    )
-    return {"research": response}
-
-
-def format_research_spec(state: State) -> State:
-    spec = state.get("research")
-    if not spec:
-        return {"research_summary": "No merged requirement spec was generated."}
-
-    def bullets(items: List[str]) -> str:
-        return "\n".join(f"  - {i}" for i in items) if items else "  (none)"
-
-    summary = f"""Project: {spec.project_name} ({spec.project_type})
-Summary: {spec.project_summary}
-Target users: {spec.target_users}
-Primary goal: {spec.primary_goal}
-
-Core features:
-{bullets(spec.core_features)}
-
-Optional features:
-{bullets(spec.optional_features)}
-
-Functional requirements:
-{bullets(spec.functional_requirements)}
-
-Non-functional requirements:
-{bullets(spec.non_functional_requirements)}
-
-User constraints:
-{bullets(spec.user_constraints)}
-
-Research recommendations:
-{bullets(spec.research_recommendations)}
-
-Design reference: {spec.design_reference}
-
-Quality goals:
-{bullets(spec.quality_goals)}"""
-
-    return {"research_summary": summary}
+    return {'design_direction_summary': summary}
 
 
 def planner(state: State) -> State:
     prompt = PromptTemplate(
         template="""You are an expert software architect and project planner for an AI code generation system.
 
-Your ONLY job is to analyze the merged requirement spec (and, if provided, a design schema
-extracted from a reference image and a design direction defining this project's visual
-identity) and produce a detailed, structured project plan. You do NOT write any code.
+Your ONLY job is to analyze the user's request (and, if provided, a research report about
+a reference site/product, a design schema extracted from a reference image, and a design
+direction defining this project's visual identity) and produce a detailed, structured
+project plan. You do NOT write any code. You only plan.
 
 ---
 
 INPUTS YOU WILL RECEIVE:
 
-1. requirement_spec: the single merged source of truth for WHAT to build — combines the
-   user's request, research findings, and image analysis into one clean spec. This is your
-   primary input for scope and features.
-2. design_schema: a structured extraction of a reference IMAGE the user uploaded — its sections,
-   components, exact text, colors, typography, and layout positions. May say "No reference
+1. user_query: the user's project request.
+2. research_report: findings from a research step about an external site/product the user
+   referenced (e.g. "clone Stripe's homepage"). This may be empty — if so, ignore it entirely
+   and plan purely from user_query as you normally would.
+3. design_schema: a structured extraction of a reference IMAGE the user uploaded — its sections,
+   components, exact text, colors, typography, and layout positions. This may say "No reference
    image was provided" — if so, ignore it entirely.
-3. design_direction_summary: the project's established visual identity — palette, type pairing,
-   layout concept, signature element, and copy voice. The source of truth for AESTHETIC
-   decisions, the way design_schema is the source of truth for exact structural extraction.
-   May say "No design direction was generated" — if so, make reasonable, cohesive choices
-   yourself, but keep them consistent across every file in the plan.
+4. design_direction_summary: the project's established visual identity — palette, type pairing,
+   layout concept, signature element, and copy voice. This is the single source of truth for
+   AESTHETIC decisions (what things look and sound like), the same way design_schema is the
+   source of truth for exact structural extraction from an image. This may say "No design
+   direction was generated" — if so, ignore it entirely and make reasonable, cohesive choices
+   yourself, but still keep them consistent across every file in the plan.
 
 ---
 
-HOW TO USE requirement_spec:
+HOW TO USE research_report (when present):
 
-- Treat core_features and functional_requirements as the mandatory scope of the build.
-- Treat optional_features as things to include only if they fit naturally without bloating
-  the plan.
-- Respect user_constraints as hard limits — never plan around them.
-- Use design_reference as a secondary steer on layout/visual style, but design_schema and
-  design_direction_summary win over it for anything they explicitly specify (see precedence
-  rule below).
+- Treat it as REFERENCE MATERIAL describing what the target site/product looks like and how
+  it's structured — not as a list of instructions or file names to produce.
+- Use it to inform: page sections, layout structure, content/copy style, visual hierarchy,
+  key features/components the user likely wants replicated.
+- Only use details that are explicitly present in research_report. Do NOT add anything about
+  the referenced site from your own general knowledge, even if you recognize it — the report
+  is the single source of truth for what was actually observed.
+- If research_report is incomplete, partial, or marked as failed/empty for something the user
+  asked to clone, do not invent the missing pieces — plan using what's available and keep that
+  section simpler/generic rather than guessing specifics.
 
 ---
 
@@ -516,6 +347,9 @@ HOW TO USE design_schema (when present):
 - design_schema is extracted directly from an image the user wants replicated. It is the SOURCE
   OF TRUTH for exact visual STRUCTURE — sections, components, exact text content, colors,
   positioning, and typography hierarchy.
+- If both design_schema and research_report are present, design_schema wins for anything visual
+  or structural (layout, colors, exact text, positioning). research_report should only fill in
+  behavioral/functional details the image can't show (e.g. what a button does when clicked).
 - Every section_id and component listed in design_schema MUST be reflected as explicit,
   concrete responsibilities in your file plan — not summarized away. Instead of "build the hero
   section," write responsibilities like "hero section: heading text 'X', two buttons labeled
@@ -528,30 +362,44 @@ HOW TO USE design_schema (when present):
 HOW TO USE design_direction_summary (when present):
 
 - design_direction_summary is the SOURCE OF TRUTH for aesthetic IDENTITY — palette, fonts,
-  layout concept, signature element, and copy voice.
+  layout concept, signature element, and copy voice — the way design_schema is the source of
+  truth for exact structural extraction. They answer different questions: design_schema says
+  "what's on the page and where," design_direction_summary says "what should everything look
+  and sound like."
 - Every responsibility you write for a file that renders visuals or text MUST derive its colors,
-  fonts, and copy tone from design_direction_summary — not invent new ones.
+  fonts, and copy tone from design_direction_summary — not invent new ones. If a file needs a
+  color for something design_schema/design_direction_summary doesn't explicitly cover, derive it
+  from the existing palette rather than introducing an unrelated new one.
 - Reflect the signature_element explicitly in the responsibilities of whichever file renders it,
-  called out as a distinct, deliberate responsibility.
+  called out as a distinct, deliberate responsibility — not folded anonymously into a generic
+  "build the hero" line.
 - Reflect copy_voice as an explicit responsibility wherever a file is expected to write its own
-  text content.
-- If the project has multiple files that render visuals, the plan must specify ONE shared
-  source for colors/typography (e.g. CSS custom properties defined once) so every file stays
-  visually consistent instead of each file guessing independently.
+  text content (e.g. "write button labels and headings in the voice described in copy_voice:
+  plain, active-voice, no filler" — not generic placeholder copy).
+- If the project has multiple files that render visuals (e.g. separate HTML and CSS), the plan
+  must specify ONE shared source for colors/typography (e.g. CSS custom properties named after
+  the palette, defined once in a single file) so every file stays visually consistent instead
+  of each file guessing independently.
 - Do not invent a different palette, font pairing, or signature element than what
-  design_direction_summary specifies.
+  design_direction_summary specifies. Do not water down or generalize its choices into safer
+  defaults.
 
 ---
 
 PRECEDENCE RULE (when inputs conflict):
 
-user_constraints (from requirement_spec) > design_schema (visual ground truth for structure) >
-design_direction_summary (visual ground truth for aesthetic identity) > requirement_spec's
-design_reference / research_recommendations (general reference material).
+user_query (explicit user instructions) > design_schema (visual ground truth for structure) >
+design_direction_summary (visual ground truth for aesthetic identity) > research_report
+(general reference material).
 
 For structural conflicts (layout, positioning, exact content), design_schema wins over
 design_direction_summary. For aesthetic conflicts (color, type, tone) where design_schema
 wasn't extracted from an image detailed enough to specify them, design_direction_summary wins.
+
+Example: if user_query asks for a dark theme but design_schema/design_direction_summary reflect
+a light theme, follow user_query and note the deviation in that section's responsibilities —
+but still keep the rest of design_direction_summary's identity (fonts, signature element, copy
+voice) intact rather than discarding it wholesale.
 
 ---
 
@@ -562,54 +410,60 @@ RULES:
 3. Every file must have a clear, single responsibility. Do not let logic bleed between files.
 4. Always specify the exact filename with correct extension.
 5. Order files by dependency — files that others import or link to must come first (lower generate_order).
-6. If requirement_spec does not make the stack obvious, pick the best one based on these rules:
+6. If the user does not specify a language, pick the best one based on these rules:
    - Static webpage or portfolio → HTML + CSS + JS (separate files)
    - REST API or backend server → Python (Flask) or Node.js depending on complexity
    - Data processing or AI script → Python
    - CLI tool or automation → Python or Bash
    - System level or performance critical → C++
-7. Never combine responsibilities into one file unless explicitly required.
+7. Never combine responsibilities into one file unless the user explicitly asks for a single
+   file output.
 8. Specify which files link to or import each other explicitly using exact filenames in depends_on.
 9. If a project needs a config file (like package.json), include it in the plan.
 10. Keep packages minimal — only include what is absolutely necessary.
 11. Do not over-engineer simple requests. A calculator script does not need five files.
 12. Do not under-build real requests. A portfolio website needs separated HTML, CSS, and JS
     unless told otherwise.
-13. If requirement_spec or design_schema describes structural elements, reflect that structure
-    explicitly in the relevant file's responsibilities — don't flatten it into a vague
-    "build the homepage" instruction.
+13. If research_report or design_schema describes structural elements (e.g. "hero section,
+    pricing grid, footer with 4 columns"), reflect that structure explicitly in the relevant
+    file's responsibilities — don't flatten it into a vague "build the homepage" instruction.
 
 ---
 
 IMPORTANT BEHAVIOURS:
 
 - The plan you produce is the only instruction the code generator will receive per file. It
-  never sees requirement_spec, design_schema, or design_direction_summary directly — if a
-  detail matters, it must appear in your responsibilities text, or it will be lost.
-- Think about what a senior engineer would consider "complete" for this request.
-- Always double check that depends_on relationships are consistent.
+  never sees research_report, design_schema, or design_direction_summary directly — if a detail
+  matters, it must appear in your responsibilities text, or it will be lost.
+- Think about what a senior engineer would consider "complete" for this request — not
+  minimal, not over-built.
+- Always double check that depends_on relationships are consistent — if app.js depends_on
+  index.html's element IDs, make that clear in the responsibilities of both files so the
+  code generator keeps them in sync.
+- Never let research_report, design_schema, or design_direction_summary override explicit user
+  instructions in user_query.
 
 ---
 
-requirement_spec: {research_summary}
+user_query: {query}
+
+research_report: {research_context}
 
 design_schema: {image_description}
 
 design_direction_summary: {design_direction_summary}""",
-        input_variables=["research_summary", "image_description", "design_direction_summary"],
+        input_variables=['query', 'research_context', 'image_description', 'design_direction_summary']
     )
     struct_model = model.with_structured_output(all_files)
     chain = prompt | struct_model
-    response = invoke_with_retry(
-        chain,
-        {
-            "research_summary": state["research_summary"],
-            "image_description": state["image_description"],
-            "design_direction_summary": state["design_direction_summary"],
-        },
-        "planner",
-    )
-    return {"fileplans": response}
+    response = chain.invoke({
+        'query': state['new_request'],
+        'research_context': state['research_context'],
+        'image_description': state['image_description'],
+        'design_direction_summary': state['design_direction_summary']
+    })
+    time.sleep(4)
+    return {'fileplans': response}
 
 
 CODE_GEN_TEMPLATE = """You are an expert software engineer generating one file at a time as part of a larger multi-file project.
@@ -647,61 +501,84 @@ RULES:
 
 ---
 
-USING requirement_spec (when provided and non-empty):
+USING research_context (when provided and non-empty):
 
-11. requirement_spec is the merged source of truth for what the product is and does — use
-    it to inform content, copy, and functional behavior for this specific file where the
-    blueprint's responsibilities reference project-level features or goals.
-12. The blueprint and dependency code remain the source of truth for filenames, function
-    names, IDs, and how files link together. requirement_spec never overrides those.
+11. Use research_context only to inform CONTENT and STRUCTURE fidelity for this specific
+    file — actual section names, copy, layout structure, component ordering — when the
+    blueprint's responsibilities for this file relate to replicating a referenced site.
+12. The blueprint and dependency code remain the source of truth for filenames,
+    function names, IDs, and how files link together. research_context never overrides
+    those — it only fills in *what the content/structure should look like*, not *how files
+    are wired together*.
+13. Only use details explicitly present in research_context. If it is empty or doesn't cover
+    something this file needs, build that part using standard, sensible conventions instead
+    of guessing at the real site's specifics.
+14. If research_context is empty, ignore it completely and generate the file purely from
+    purpose/responsibilities as normal.
 
 ---
 
 USING design_schema (when provided and non-empty):
 
-13. design_schema is an exact extraction from a reference image — treat its bounding boxes,
-    colors, text content, and typography as ground truth for THIS file's visual STRUCTURE,
-    not as loose inspiration.
-14. Reproduce text_content fields EXACTLY character-for-character wherever this file renders
+15. design_schema is an exact extraction from a reference image — treat its bounding boxes,
+    colors, text content, and typography as ground truth for THIS file's visual STRUCTURE
+    (positions, sizes, exact text, per-component colors), not as loose inspiration.
+16. Reproduce text_content fields EXACTLY character-for-character wherever this file renders
     visible text. Do not paraphrase, shorten, or "improve" the wording.
-15. Convert bounding boxes (given as % of image width/height) into responsive layout code —
+17. Convert bounding boxes (given as % of image width/height) into responsive layout code —
     percentage widths, flex/grid proportions — never hardcoded pixel positions.
-16. Map relative typography sizes to concrete values using this fixed scale: largest=2.5rem,
+18. Map relative typography sizes to concrete values using this fixed scale: largest=2.5rem,
     large=1.75rem, medium=1.25rem, small=1rem, smallest=0.875rem. Do not invent a different scale.
-17. For any component where image_description is filled in, render a placeholder that matches
+19. For any component where image_description is filled in, render a placeholder that matches
     the described content and approximate aspect ratio — never fabricate a real image URL.
-18. Only use details explicitly present in design_schema. If it doesn't cover something this
-    file needs, fall back to design_direction, then to requirement_spec, then to standard
-    convention.
-19. If design_schema is empty, ignore it completely.
+20. Only use details explicitly present in design_schema. If it doesn't cover something this
+    file needs, fall back to design_direction, then to standard, sensible convention.
+21. If design_schema is empty, ignore it completely.
 
 ---
 
 USING design_direction (when provided and non-empty):
 
-20. design_direction is the SOURCE OF TRUTH for this project's aesthetic IDENTITY — palette,
+22. design_direction is the SOURCE OF TRUTH for this project's aesthetic IDENTITY — palette,
     fonts, layout concept, signature element, and copy voice. Every color, font-family, and
     piece of written copy this file produces must trace back to design_direction — never invent
     a new color, font, or generic placeholder copy independently.
-21. If this file defines shared visual tokens (e.g. a CSS file with :root custom properties),
-    define design_direction's palette and fonts there ONCE, named clearly, so every other file
+23. If this file defines shared visual tokens (e.g. a CSS file with :root custom properties,
+    a Tailwind config, a theme constants file), define design_direction's palette and fonts
+    there ONCE, named clearly (e.g. --color-accent, --font-display), so every other file
     references those names instead of repeating raw hex values or font strings.
-22. If this file is NOT the shared-tokens file but still renders visuals, reference the shared
-    token names/variables defined by its dependency rather than hardcoding raw values again.
-23. If this file's responsibilities call out the signature_element, implement it as the single
-    most deliberate, polished piece of this file.
-24. Wherever this file writes its own visible text, match copy_voice exactly — specific and
-    active, never generic marketing filler like "Welcome to our platform."
-25. design_schema (when present) governs exact structural extraction; design_direction governs
-    aesthetic identity. On conflict, design_schema wins for that specific component.
-26. If design_direction is empty, ignore it and fall back to design_schema, then requirement_spec,
-    then standard convention.
+24. If this file is NOT the shared-tokens file but still renders visuals, reference the shared
+    token names/variables defined by its dependency rather than hardcoding raw values again —
+    check the dependency code provided above for what those names actually are.
+25. If this file's responsibilities call out the signature_element, implement it as the single
+    most deliberate, polished piece of this file — spend extra care here specifically (spacing,
+    motion, detail) rather than treating it like any other component.
+26. Wherever this file writes its own visible text (headings, labels, button text, empty
+    states, error messages), match copy_voice exactly — specific and active, never generic
+    marketing filler like "Welcome to our platform" or "Get started today."
+27. design_schema (when present) governs exact structural extraction from a reference image;
+    design_direction governs aesthetic identity. If design_schema's extracted colors/fonts
+    conflict with design_direction's palette/fonts, design_schema wins for that specific
+    component (it reflects a real reference image), but stay within design_direction's overall
+    identity for anything design_schema doesn't explicitly specify.
+28. If design_direction is empty, ignore it and fall back to design_schema, then to standard,
+    sensible, internally-consistent convention.
+
+---
+
+WHEN research_context, design_schema, AND design_direction ARE ALL PRESENT:
+
+29. design_schema governs exact visual/structural details (positions, exact text, per-component
+    colors extracted from the reference image). design_direction governs aesthetic identity
+    (palette naming, fonts, copy voice, signature element) for anything design_schema doesn't
+    pin down. research_context governs behavior, functionality, and structural detail not
+    covered by the image. On direct conflict over a visual detail, design_schema wins.
 
 ---
 
 CRITICAL OUTPUT FORMAT REQUIREMENT:
 
-27. Your response must contain ONLY raw code.
+30. Your response must contain ONLY raw code.
     Do NOT wrap the code in markdown code fences (no ``` at the start or end).
     Do NOT write the language name as the first line.
     Do NOT include any explanation before or after the code.
@@ -714,17 +591,21 @@ purpose: {description}
 responsibilities: {responsibilities}
 depends_on: {depends_on}
 package (if required): {package}
-requirement_spec (if applicable): {research_summary}
+research_context (if applicable): {research_context}
 design_schema (if applicable): {image_description}
 design_direction (if applicable): {design_direction}"""
 
 
 def code_generator(state: State) -> State:
-    """Sorts files by generate_order so dependencies are built first. Only feeds
-    each file the code of its actual depends_on list (not everything). Reads
-    design_direction_summary and research_summary directly from state — both
-    are already-formatted strings computed by earlier nodes."""
-    plan = state["fileplans"]
+    """- sorts files by generate_order so dependencies are built first
+    - only feeds each file the code of its actual depends_on list (not everything)
+    - FIXED: reads the already-computed 'design_direction_summary' directly from
+      state instead of calling format_design_direction(...), which is now a graph
+      node with signature (state: State) -> State, not a (DesignDirection) -> str
+      helper. Calling it the old way would crash with AttributeError, since a
+      DesignDirection object has no .get() method.
+    """
+    plan = state['fileplans']
     ordered_files = sorted(plan.files, key=lambda f: f.generate_order)
 
     project_blueprint_ctx = "\n".join([
@@ -734,18 +615,17 @@ def code_generator(state: State) -> State:
         for f in ordered_files
     ])
 
-    design_direction_ctx = state.get("design_direction_summary", "No design direction was generated.")
-    research_summary_ctx = state.get("research_summary", "No merged requirement spec was generated.")
+    design_direction_ctx = state.get('design_direction_summary', "No design direction was generated.")
 
     code_for_each_file: dict[str, str] = {}
 
     prompt = PromptTemplate(
         template=CODE_GEN_TEMPLATE,
         input_variables=[
-            "blueprint", "file", "description", "responsibilities",
-            "depends_on", "package", "research_summary", "image_description",
-            "design_direction", "code",
-        ],
+            'blueprint', 'file', 'description', 'responsibilities',
+            'depends_on', 'package', 'research_context', 'image_description',
+            'design_direction', 'code'
+        ]
     )
     chain = prompt | coding_model | StrOutputParser()
 
@@ -756,71 +636,57 @@ def code_generator(state: State) -> State:
             if dep in code_for_each_file
         ]) or "No dependency code available."
 
-        response = invoke_with_retry(
-            chain,
-            {
-                "blueprint": project_blueprint_ctx,
-                "file": f.filename,
-                "description": f.purpose,
-                "responsibilities": "\n".join(f"- {r}" for r in f.responsibilities),
-                "depends_on": ", ".join(f.depends_on) if f.depends_on else "none",
-                "package": f.package,
-                "research_summary": research_summary_ctx,
-                "image_description": state["image_description"],
-                "design_direction": design_direction_ctx,
-                "code": dep_context,
-            },
-            f"code_generator:{f.filename}",
-        )
+        response = chain.invoke({
+            'blueprint': project_blueprint_ctx,
+            'file': f.filename,
+            'description': f.purpose,
+            'responsibilities': "\n".join(f"- {r}" for r in f.responsibilities),
+            'depends_on': ", ".join(f.depends_on) if f.depends_on else "none",
+            'package': f.package,
+            'research_context': state['research_context'],
+            'image_description': state['image_description'],
+            'design_direction': design_direction_ctx,
+            'code': dep_context,
+        })
 
         code_for_each_file[f.filename] = response
-        logger.info("Generated %s (%d chars)", f.filename, len(response))
+        time.sleep(2)
 
-    return {"file_code": code_for_each_file}
-
+    return {'file_code': code_for_each_file}
 
 # ---------------------------------------------------------------------------
 # Graph wiring
 # ---------------------------------------------------------------------------
 graph = StateGraph(State)
-graph.add_node("query_optimizer", query_optimizer)
-graph.add_node("call_researchor_or_not", call_researchor_or_not)
-graph.add_node("checker", checker)
-graph.add_node("get_image_schema", get_image_schema)
-graph.add_node("format_design_schema", format_design_schema)
-graph.add_node("design_direction", design_direction)
-graph.add_node("format_design_direction", format_design_direction)
-graph.add_node("research_gather", research_gather)
-graph.add_node("format_research_spec", format_research_spec)
-graph.add_node("planner", planner)
-graph.add_node("code_generator", code_generator)
+graph.add_node('query_optimizer', query_optimizer)
+graph.add_node('planner', planner)
+graph.add_node('code_generator', code_generator)
+graph.add_node('call_researchor_or_not', call_researchor_or_not)
+graph.add_node('checker', checker)
+graph.add_node('get_image_schema', get_image_schema)
+graph.add_node('format_design_schema', format_design_schema)
+graph.add_node('design_direction', design_direction)
+graph.add_node('format_design_direction', format_design_direction)
 
-graph.add_edge(START, "query_optimizer")
-graph.add_edge("query_optimizer", "call_researchor_or_not")
-graph.add_edge("query_optimizer", "get_image_schema")
-graph.add_edge("get_image_schema", "format_design_schema")
-graph.add_edge("call_researchor_or_not", "checker")
+graph.add_edge(START, 'query_optimizer')
+graph.add_edge('query_optimizer', 'call_researchor_or_not')
+graph.add_edge('query_optimizer', 'get_image_schema')
+graph.add_edge('get_image_schema', 'format_design_schema')
+graph.add_edge('call_researchor_or_not', 'checker')
 
 # design_direction waits on BOTH branches so image_description always exists first
-graph.add_edge("format_design_schema", "design_direction")
-graph.add_edge("checker", "design_direction")
+graph.add_edge('format_design_schema', 'design_direction')
+graph.add_edge('checker', 'design_direction')
 
-graph.add_edge("design_direction", "format_design_direction")
-
-# research_gather merges new_request + research_context + image_description into
-# one RequirementSpec — runs after format_design_direction so image_description
-# and research_context are both finalized.
-graph.add_edge("format_design_direction", "research_gather")
-graph.add_edge("research_gather", "format_research_spec")
-graph.add_edge("format_research_spec", "planner")
-
-graph.add_edge("planner", "code_generator")
-graph.add_edge("code_generator", END)
+graph.add_edge('design_direction', 'format_design_direction')
+graph.add_edge('format_design_direction', 'planner')
+graph.add_edge('planner', 'code_generator')
+graph.add_edge('code_generator',  END)
 
 workflow = graph.compile()
 
 
-def run_pipeline(prompt: str, reference_image_path: str = "") -> dict[str, str]:
+def run_pipeline(prompt: str, reference_image_path: str) -> dict[str, str]:
     """Runs the graph for a given prompt and returns {filename: code}."""
-    result = workflow.invoke({"prompt": prompt, "reference_image_path": reference_image_path})
-    return result["file_code"]
+    result = workflow.invoke({'prompt': prompt, 'reference_image_path': reference_image_path})
+    return result['file_code']
