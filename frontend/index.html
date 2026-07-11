@@ -1400,7 +1400,13 @@
 
   // change this to your deployed API base when you host the backend elsewhere
   const API_BASE = "https://ziporgai-production-a73e.up.railway.app";
-  const API_URL = API_BASE + "/generate";
+  const GENERATE_URL = API_BASE + "/generate";
+  const STATUS_URL = (jobId) => API_BASE + "/generate/status/" + jobId;
+  const DOWNLOAD_URL = (jobId) => API_BASE + "/generate/download/" + jobId;
+
+  // how often to poll for job status, and how long to give up after
+  const POLL_INTERVAL_MS = 3000;
+  const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes safety cap
 
   const MAX_IMAGE_MB = 8;
   let selectedImage = null;
@@ -1533,6 +1539,7 @@
   }
 
   let progressTimer = null;
+  let pollTimer = null;
   let currentDownloadUrl = null;
 
   // ---------- hand-off to chat.html ----------
@@ -1569,6 +1576,20 @@
     }
   }
 
+  // Small helper: await a timeout, used between polls
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ------------------------------------------------------------------
+  // generate() — now split into two SHORT awaited calls plus a polling
+  // loop, instead of one single long-lived fetch. Each individual
+  // request (kick off the job / check its status / download the zip)
+  // returns in a second or two, so no proxy or browser timeout ever
+  // gets a chance to kill a multi-minute connection. The overall wait
+  // for the user is the same; only the tool the browser is using to
+  // wait is different (many short awaits instead of one long await).
+  // ------------------------------------------------------------------
   async function generate() {
     const prompt = promptEl.value.trim();
     if (!prompt) {
@@ -1596,7 +1617,7 @@
     statusLine.textContent = stageMessages[0];
     setZipper(6);
 
-    // advance through the visible stages while the request is in flight;
+    // advance through the visible stages while the job is in flight;
     // hold on the last stage until the response actually arrives
     progressTimer = setInterval(() => {
       if (stageIndex < 3) {
@@ -1611,28 +1632,63 @@
     const threadId = makeThreadId();
 
     try {
+      // ---- Step 1: kick off the job (fast — just enqueues work) ----
       const formData = new FormData();
       formData.append('thread_id', threadId);
       formData.append('prompt', prompt);
       if (selectedImage) formData.append('reference_image', selectedImage);
 
-      const res = await fetch(API_URL, {
+      const startRes = await fetch(GENERATE_URL, {
         method: 'POST',
         body: formData
       });
 
-      clearInterval(progressTimer);
-
-      if (!res.ok) {
-        let detail = 'Request failed with status ' + res.status + '.';
+      if (!startRes.ok) {
+        let detail = 'Request failed with status ' + startRes.status + '.';
         try {
-          const errJson = await res.json();
+          const errJson = await startRes.json();
           if (errJson && errJson.detail) detail = errJson.detail;
         } catch (_) {}
         throw new Error(detail);
       }
 
-      const blob = await res.blob();
+      const startData = await startRes.json();
+      const jobId = startData.job_id;
+      if (!jobId) throw new Error('No job_id returned by the server.');
+
+      // ---- Step 2: poll status every few seconds (each check is fast) ----
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let jobStatus = 'running';
+      let jobDetail = null;
+
+      while (jobStatus === 'running') {
+        if (Date.now() > deadline) {
+          throw new Error('Build is taking longer than expected. Please try again.');
+        }
+        await sleep(POLL_INTERVAL_MS);
+
+        const statusRes = await fetch(STATUS_URL(jobId));
+        if (!statusRes.ok) {
+          throw new Error('Lost track of the build (status check failed with ' + statusRes.status + ').');
+        }
+        const statusData = await statusRes.json();
+        jobStatus = statusData.status;
+        jobDetail = statusData.detail;
+      }
+
+      if (jobStatus === 'error') {
+        throw new Error(jobDetail || 'The build failed on the server.');
+      }
+
+      // ---- Step 3: job is done — fetch the finished zip (fast download) ----
+      const downloadRes = await fetch(DOWNLOAD_URL(jobId) + '?thread_id=' + encodeURIComponent(threadId));
+      if (!downloadRes.ok) {
+        throw new Error('Build finished but the file could not be downloaded (status ' + downloadRes.status + ').');
+      }
+
+      clearInterval(progressTimer);
+
+      const blob = await downloadRes.blob();
       const url = URL.createObjectURL(blob);
       currentDownloadUrl = url;
 
