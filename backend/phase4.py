@@ -326,8 +326,8 @@ class State(TypedDict):
     execution_result: ExecutionResult
     retry_count: int
     screenshot_spec: ScreenshotSpec | None
-    screenshot_error: str | None         # NEW: last screenshot-capture exception message, if any
-    screenshot_retry_count: int          # NEW: retry counter dedicated to capture_screenshots
+    screenshot_error: str | None         # last screenshot-capture exception message, if any
+    screenshot_retry_count: int          # retry counter dedicated to capture_screenshots
     project_dir: str                          # stable run id/dir reused across patch passes
     review_result: UIReviewResult | None
     patch_plan: PatchPlan | None
@@ -1114,7 +1114,7 @@ Error handling UX: {ux.error_handling_ux}"""
 
 
 def component_spec_node(state: State) -> State:
-    """FIX: uses `model` (Gemini) instead of groq_model — matches every other spec
+    """Uses `model` (Gemini) instead of groq_model — matches every other spec
     node. ComponentSpec is deeply nested (components -> variants -> states), which
     is exactly where a smaller model's structured-output tool-calling tends to drop
     or malform fields."""
@@ -1622,7 +1622,7 @@ def detect_stack(file_code: dict[str, str]) -> str:
 
 
 def detect_python_entrypoint(file_code: dict[str, str]) -> str:
-    """FIX: was hardcoded to always run `python3 app.py`. Now prefers app.py if it
+    """Was hardcoded to always run `python3 app.py`. Now prefers app.py if it
     was actually generated, otherwise falls back to the first .py file that exists
     (sorted, deterministic) so a python project doesn't fail purely because the
     planner/coding model named the entry file something else (main.py, server.py)."""
@@ -1671,12 +1671,13 @@ def wait_for_ready(sandbox, timeout=30):
     return False
 
 
-def _fail(stack: str, sandbox_id: str, stderr: str) -> dict:
-    """FIX: every execute_project failure path now goes through here so the reason
+def _fail(stack: str, sandbox_id: str | None, stderr: str) -> dict:
+    """Every execute_project failure path now goes through here so the reason
     is ALWAYS printed to stdout (visible in Railway logs). Previously only the
     success path printed anything — every failure was silent, so repeated failed
     retries gave zero diagnostic information, which is exactly what showed up in
-    production (3 failed attempts, no clue why in the logs)."""
+    production (3 failed attempts, no clue why in the logs). sandbox_id may be
+    None if the sandbox was never successfully created."""
     print(f"execute_project_failed [{stack}]: {stderr}")
     return {'execution_result': ExecutionResult(
         status="failed", url=None, sandbox_id=sandbox_id,
@@ -1687,7 +1688,19 @@ def _fail(stack: str, sandbox_id: str, stderr: str) -> dict:
 def execute_project(state: State) -> State:
     file_code = state['file_code']
     stack = detect_stack(file_code)
-    sandbox = Sandbox.create(timeout=1200)  # 20 min — survives the review/patch loop later
+
+    # FIX: Sandbox.create() was previously OUTSIDE the try block. If it raised
+    # (E2B API error, rate limit, transient network failure), the exception
+    # propagated straight out of this node and crashed the entire LangGraph
+    # run instead of being caught and routed through route_after_execution's
+    # normal retry/give-up logic. Now it's wrapped and routed through _fail
+    # just like every other failure mode here.
+    try:
+        sandbox = Sandbox.create(timeout=1200)  # 20 min — survives the review/patch loop later
+    except Exception as e:
+        print(f"execute_project_sandbox_create_failed [{stack}]: {e!r}")
+        return _fail(stack, None, f"Sandbox.create() failed: {e}")
+
     try:
         for filename, content in file_code.items():
             sandbox.files.write(f"/home/user/project/{filename}", content)
@@ -1712,7 +1725,7 @@ def execute_project(state: State) -> State:
         print(f"execute_project_starting_server: {run_cmd}")
         sandbox.commands.run(run_cmd, background=True)
         if not wait_for_ready(sandbox):
-            # FIX: capture what the sandbox actually looks like right before giving
+            # Capture what the sandbox actually looks like right before giving
             # up (last HTTP probe result + whether the server process is even
             # running) instead of just "Server did not become ready in time" with
             # no further clue as to why.
@@ -1758,13 +1771,18 @@ def route_after_execution(state: State) -> str:
     if state['execution_result'].status == "success":
         return "success"
     if state.get('retry_count', 0) >= 2:
-        # FIX: the give-up path used to end silently — the caller (run_pipeline /
+        # The give-up path used to end silently — the caller (run_pipeline /
         # the FastAPI endpoint) got a dict with execution_result.status="failed"
         # but nothing in the logs said "we're giving up here", making it look like
         # the process just stopped. Print the final stderr so it's unmistakable.
         print(f"execute_project_gave_up_after_retries: {state['execution_result'].stderr}")
         return "give_up"
     return "retry"
+
+
+# ---------------------------------------------------------------------------
+# Screenshot capture
+# ---------------------------------------------------------------------------
 def _capture(page, url, path):
     """Open page and save screenshot. Retries page.goto/screenshot failures
     (network hiccups, slow-rendering pages) — NOT browser launch failures,
@@ -1834,6 +1852,9 @@ def _diagnose_playwright_env():
         print("=" * 60)
     except Exception as diag_err:
         print(f"playwright_diagnostic_failed: {diag_err!r}")
+
+
+MAX_SCREENSHOT_RETRIES = 2
 
 
 def capture_screenshots(state: State) -> State:
@@ -1920,6 +1941,8 @@ def capture_screenshots(state: State) -> State:
                     tablet=tablet_path,
                     mobile=mobile_path,
                 ),
+                # Clear any stale error from a prior failed attempt now that this
+                # attempt succeeded.
                 "screenshot_error": None,
             }
 
@@ -1947,6 +1970,7 @@ def capture_screenshots(state: State) -> State:
         "screenshot_error": last_error,
     }
 
+
 def bump_screenshot_retry(state: State) -> State:
     """Increments the dedicated screenshot retry counter and loops back into
     capture_screenshots. This node exists so a transient/flaky browser launch
@@ -1959,7 +1983,7 @@ def bump_screenshot_retry(state: State) -> State:
 
 
 def route_after_capture_screenshots(state: State) -> str:
-    """FIX: this is the actual missing retry path. If capture_screenshots
+    """This is the retry path for screenshot capture. If capture_screenshots
     succeeded (screenshot_spec is set), behave exactly as before — first pass
     goes to review, a pass after a patch goes to compare, and a post-revert
     confirmation shot goes straight to END.
@@ -2073,13 +2097,13 @@ Return ONLY a valid JSON object matching exactly this schema:
 def ui_reviewer(state: State) -> State:
     spec = state.get('screenshot_spec')
     if not spec:
-        # FIX: this branch is now reached ONLY after MAX_SCREENSHOT_RETRIES
-        # genuine retries (see route_after_capture_screenshots), so it's a
-        # confirmed, persistent infrastructure failure, not a first-attempt
-        # blip. Make that loud in both the log line and the summary text, and
-        # carry the actual exception message through, instead of the old
-        # generic "build likely failed" message that looked identical whether
-        # the site itself was broken or the review tooling was.
+        # This branch is reached ONLY after MAX_SCREENSHOT_RETRIES genuine
+        # retries (see route_after_capture_screenshots), so it's a confirmed,
+        # persistent infrastructure failure, not a first-attempt blip. Make
+        # that loud in both the log line and the summary text, and carry the
+        # actual exception message through, instead of a generic message that
+        # looks identical whether the site itself was broken or the review
+        # tooling was.
         screenshot_error = state.get('screenshot_error')
         retries_used = state.get('screenshot_retry_count', 0)
         summary = (
@@ -2117,7 +2141,7 @@ def ui_reviewer(state: State) -> State:
     structured_model = model.with_structured_output(UIReviewResult)
     result = structured_model.invoke([message])
 
-    # FIX: merge deterministic static_analyzer findings in as forced critical issues.
+    # Merge deterministic static_analyzer findings in as forced critical issues.
     # The vision model can miss a literal "undefined" string or a broken stylesheet
     # link if it doesn't render obviously enough in a screenshot — these findings
     # were confirmed by direct inspection of the generated source, so they cannot be
@@ -2157,14 +2181,11 @@ def route_after_ui_review(state: State) -> str:
     review = state.get('review_result')
     retries = state.get('ui_review_retry_count', 0)
 
-    # FIX: this is the branch that used to silently swallow a screenshot
-    # infra failure. If screenshots never succeeded (screenshot_spec is
-    # still None at this point — i.e. every retry in
-    # route_after_capture_screenshots was exhausted), there is nothing a
-    # code patch can fix: the problem is the review tooling's environment,
-    # not the generated site. Log it loudly and end — but critically, do
-    # NOT let this look like a normal "done" pass. The distinction matters
-    # for anyone reading the logs after the fact.
+    # If screenshots never succeeded (screenshot_spec is still None at this
+    # point — i.e. every retry in route_after_capture_screenshots was
+    # exhausted), there is nothing a code patch can fix: the problem is the
+    # review tooling's environment, not the generated site. Log it loudly and
+    # end — but critically, do NOT let this look like a normal "done" pass.
     if state.get('screenshot_error') and not state.get('screenshot_spec'):
         print(
             "route_after_ui_review: ENDING due to unresolved screenshot "
@@ -2297,6 +2318,19 @@ RULES
 
 
 def patch_generator(state: State) -> State:
+    """FIX (Bug 1): previously returned only {'file_code': ..., 'pre_patch_file_code': ...}
+    and NEVER set previous_screenshot_spec. That meant:
+      - route_after_capture_screenshots' `if state.get('previous_screenshot_spec')` was
+        always False, so screenshot_comparator never actually ran after a patch pass.
+      - ui_review_retry_count (only ever incremented inside screenshot_comparator)
+        therefore never incremented either.
+      - route_after_ui_review's `retries >= MAX_UI_REVIEW_RETRIES` check never tripped,
+        so the ui_reviewer -> patch_planner -> patch_generator loop had NO upper bound.
+    Fixed by snapshotting the CURRENT screenshot_spec (the "before" shot for this patch
+    pass) into previous_screenshot_spec on every return, and resetting
+    screenshot_retry_count to 0 so the fresh capture round gets its full retry budget
+    rather than inheriting a partially-used counter from the previous round.
+    """
     patch_plan = state.get('patch_plan')
     file_code = dict(state.get('file_code', {}))
     if not patch_plan or not patch_plan.patches:
@@ -2334,7 +2368,14 @@ def patch_generator(state: State) -> State:
         # Same reasoning-trace / stray-fence stripping as code_generator.
         file_code[filename] = strip_think_tags(response)
         print(f'patched_file: {filename}')
-    return {'file_code': file_code, 'pre_patch_file_code': pre_patch_snapshot}
+    return {
+        'file_code': file_code,
+        'pre_patch_file_code': pre_patch_snapshot,
+        # FIX: carry the pre-patch screenshot forward as the "before" for the
+        # comparator, and give the next capture round a clean retry budget.
+        'previous_screenshot_spec': state.get('screenshot_spec'),
+        'screenshot_retry_count': 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2467,7 +2508,7 @@ graph.add_node('static_analyzer', static_analyzer)
 graph.add_node('execute_project', execute_project)
 graph.add_node('cleanup_failed_sandbox', cleanup_failed_sandbox)
 graph.add_node('capture_screenshots', capture_screenshots)
-graph.add_node('bump_screenshot_retry', bump_screenshot_retry)  # NEW
+graph.add_node('bump_screenshot_retry', bump_screenshot_retry)
 graph.add_node('ui_reviewer', ui_reviewer)
 graph.add_node('patch_planner', patch_planner)
 graph.add_node('patch_generator', patch_generator)
@@ -2510,10 +2551,9 @@ graph.add_conditional_edges(
     }
 )
 graph.add_edge('cleanup_failed_sandbox', 'code_generator')
-# FIX: capture_screenshots now routes through route_after_capture_screenshots,
-# which retries the screenshot step itself (up to MAX_SCREENSHOT_RETRIES) on
-# failure before ever reaching ui_reviewer — this is the retry path that was
-# previously completely missing.
+# capture_screenshots routes through route_after_capture_screenshots, which
+# retries the screenshot step itself (up to MAX_SCREENSHOT_RETRIES) on
+# failure before ever reaching ui_reviewer.
 graph.add_conditional_edges(
     'capture_screenshots',
     route_after_capture_screenshots,
@@ -2521,10 +2561,10 @@ graph.add_conditional_edges(
         "review": 'ui_reviewer',
         "compare": 'screenshot_comparator',
         "end": END,
-        "retry_screenshot": 'bump_screenshot_retry',  # NEW
+        "retry_screenshot": 'bump_screenshot_retry',
     }
 )
-graph.add_edge('bump_screenshot_retry', 'capture_screenshots')  # NEW loop-back edge
+graph.add_edge('bump_screenshot_retry', 'capture_screenshots')
 graph.add_edge('screenshot_comparator', 'regression_guard')
 # regression_guard -> (regression found -> revert file_code, redeploy through
 # static_analyzer/writer/execute_project/capture_screenshots so the live URL matches
