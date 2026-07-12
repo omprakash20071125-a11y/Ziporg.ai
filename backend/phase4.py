@@ -1681,6 +1681,19 @@ def wait_for_ready(sandbox: Sandbox, port: int = 3000, timeout: int = 30) -> boo
     return False
 
 
+def _fail(stack: str, sandbox_id: str, stderr: str) -> dict:
+    """FIX: every execute_project failure path now goes through here so the reason
+    is ALWAYS printed to stdout (visible in Railway logs). Previously only the
+    success path printed anything — every failure was silent, so repeated failed
+    retries gave zero diagnostic information, which is exactly what showed up in
+    production (3 failed attempts, no clue why in the logs)."""
+    print(f"execute_project_failed [{stack}]: {stderr}")
+    return {'execution_result': ExecutionResult(
+        status="failed", url=None, sandbox_id=sandbox_id,
+        stack_detected=stack, stderr=stderr,
+    )}
+
+
 def execute_project(state: State) -> State:
     file_code = state['file_code']
     stack = detect_stack(file_code)
@@ -1690,17 +1703,11 @@ def execute_project(state: State) -> State:
             sandbox.files.write(f"/home/user/project/{filename}", content)
 
         if stack == "static" and "index.html" not in file_code:
-            return {'execution_result': ExecutionResult(
-                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
-                stack_detected=stack,
-                stderr="No index.html among generated files — static site has no entry point.",
-            )}
+            return _fail(stack, sandbox.sandbox_id,
+                         "No index.html among generated files — static site has no entry point.")
         if stack == "node" and "package.json" not in file_code:
-            return {'execution_result': ExecutionResult(
-                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
-                stack_detected=stack,
-                stderr="Node stack detected but package.json was not generated.",
-            )}
+            return _fail(stack, sandbox.sandbox_id,
+                         "Node stack detected but package.json was not generated.")
 
         install_cmd = INSTALL_COMMANDS[stack]
         if stack == "python" and "requirements.txt" not in file_code:
@@ -1708,27 +1715,37 @@ def execute_project(state: State) -> State:
         if install_cmd:
             result = sandbox.commands.run(install_cmd, timeout=180)
             if result.exit_code != 0:
-                return {'execution_result': ExecutionResult(
-                    status="failed", url=None, sandbox_id=sandbox.sandbox_id,
-                    stack_detected=stack, stderr=result.stderr,
-                )}
+                return _fail(stack, sandbox.sandbox_id,
+                             f"install failed (exit {result.exit_code}): {result.stderr}")
 
-        sandbox.commands.run(run_commands_for(stack, file_code), background=True)
+        run_cmd = run_commands_for(stack, file_code)
+        print(f"execute_project_starting_server: {run_cmd}")
+        sandbox.commands.run(run_cmd, background=True)
         if not wait_for_ready(sandbox):
-            return {'execution_result': ExecutionResult(
-                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
-                stack_detected=stack, stderr="Server did not become ready in time",
-            )}
+            # FIX: capture what the sandbox actually looks like right before giving
+            # up (last HTTP probe result + whether the server process is even
+            # running) instead of just "Server did not become ready in time" with
+            # no further clue as to why.
+            boot_log = ""
+            try:
+                boot_log = sandbox.commands.run(
+                    "curl -s -o /dev/null -w 'last_http_code=%{http_code}\\n' http://localhost:3000; "
+                    "ps aux | grep -E 'http.server|node|python3' | grep -v grep",
+                    timeout=10,
+                ).stdout
+            except Exception:
+                pass
+            return _fail(stack, sandbox.sandbox_id,
+                         f"Server did not become ready in time. run_cmd={run_cmd!r} "
+                         f"diagnostic={boot_log!r}")
         print('execution_project_done')
         return {'execution_result': ExecutionResult(
             status="success", url=f"https://{sandbox.get_host(3000)}",
             sandbox_id=sandbox.sandbox_id, stack_detected=stack, stderr=None,
         )}
     except Exception as e:
-        return {'execution_result': ExecutionResult(
-            status="failed", url=None, sandbox_id=sandbox.sandbox_id,
-            stack_detected=stack, stderr=str(e),
-        )}
+        print(f"execute_project_exception [{stack}]: {e!r}")
+        return _fail(stack, sandbox.sandbox_id, str(e))
 
 
 def cleanup_failed_sandbox(state: State) -> State:
@@ -1751,6 +1768,11 @@ def route_after_execution(state: State) -> str:
     if state['execution_result'].status == "success":
         return "success"
     if state.get('retry_count', 0) >= 2:
+        # FIX: the give-up path used to end silently — the caller (run_pipeline /
+        # the FastAPI endpoint) got a dict with execution_result.status="failed"
+        # but nothing in the logs said "we're giving up here", making it look like
+        # the process just stopped. Print the final stderr so it's unmistakable.
+        print(f"execute_project_gave_up_after_retries: {state['execution_result'].stderr}")
         return "give_up"
     return "retry"
 
