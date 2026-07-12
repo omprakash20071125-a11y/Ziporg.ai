@@ -347,8 +347,7 @@ groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 # free options, but it's still a small, free, rate-limited model — see strip_think_tags()
 # and detect_common_bugs() below, and the comments on code_generator/patch_generator, for the
 # practical consequences of that choice.
-CODING_MODEL_NAME = os.environ.get("CODING_MODEL", "openai/gpt-oss-20b:free")
-coding_model = ChatOpenRouter(model=CODING_MODEL_NAME, temperature=0)
+coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free", temperature=0)
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
 visual languages — not one-off page styles. Your job is to convert a requirement spec and a product's
