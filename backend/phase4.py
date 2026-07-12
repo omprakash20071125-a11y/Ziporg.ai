@@ -1773,45 +1773,64 @@ def route_after_execution(state: State) -> str:
 # ---------------------------------------------------------------------------
 def capture_screenshots(state: State) -> State:
     result = state.get('execution_result')
+ 
+    # Guard: only makes sense to screenshot a successful, live deployment
     if not result or result.status != "success" or not result.url:
         print('skipping_screenshots_no_live_url')
         return {'screenshot_spec': None}
+ 
     url = result.url
     run_id = str(uuid.uuid4())[:8]
     out_dir = tempfile.gettempdir()
+ 
     desktop_path = os.path.join(out_dir, f"desktop_{run_id}.png")
     tablet_path = os.path.join(out_dir, f"tablet_{run_id}.png")
     mobile_path = os.path.join(out_dir, f"mobile_{run_id}.png")
+ 
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
+ 
+            # --- initial load ---
             page.goto(url, timeout=30000)
             page.wait_for_load_state("networkidle", timeout=15000)
             page.wait_for_timeout(3000)  # let animations/late JS settle
+ 
+            # --- desktop ---
             page.set_viewport_size({"width": 1920, "height": 1080})
             page.wait_for_timeout(500)
             page.screenshot(path=desktop_path, full_page=True)
+ 
+            # --- tablet ---
             page.set_viewport_size({"width": 768, "height": 1024})
             page.reload(timeout=30000)
             page.wait_for_load_state("networkidle", timeout=15000)
             page.wait_for_timeout(2000)
             page.screenshot(path=tablet_path, full_page=True)
+ 
+            # --- mobile ---
             page.set_viewport_size({"width": 390, "height": 844})
             page.reload(timeout=30000)
             page.wait_for_load_state("networkidle", timeout=15000)
             page.wait_for_timeout(2000)
             page.screenshot(path=mobile_path, full_page=True)
+ 
             browser.close()
-        new_spec = ScreenshotSpec(desktop=desktop_path, tablet=tablet_path, mobile=mobile_path)
-        previous = state.get('screenshot_spec')
+ 
         print('screenshots_captured')
-        return {'screenshot_spec': new_spec, 'previous_screenshot_spec': previous}
+        return {'screenshot_spec': ScreenshotSpec(
+            desktop=desktop_path,
+            tablet=tablet_path,
+            mobile=mobile_path,
+        )}
+ 
     except Exception as e:
+        # Screenshot failure shouldn't crash the whole pipeline — just means
+        # the reviewer runs without visual evidence for this attempt.
         print(f'screenshot_capture_failed: {e}')
         return {'screenshot_spec': None}
-
-
+ 
 # ---------------------------------------------------------------------------
 # UI Reviewer — looks at the live screenshots and checks whether the build
 # actually matches the design system / design direction / UX / component /
