@@ -1602,29 +1602,6 @@ def code_generator(state: State) -> State:
         print(f'code_generator_done: {f.filename}')
     return {'file_code': code_for_each_file}
 
-
-# writer node
-def writer(state: State) -> State:
-    """Writes state['file_code'] to disk. Reuses the same project_dir across
-    patch passes (instead of a fresh random dir every call) so the on-disk copy
-    of a patched project lands next to its original, pre-patch version."""
-    base_dir = os.environ.get(
-        "OUTPUT_DIR",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_projects"),
-    )
-    runid = state.get('project_dir') or str(uuid.uuid4())
-    path = os.path.join(base_dir, runid)
-    os.makedirs(path, exist_ok=True)
-    for filename, content in state['file_code'].items():
-        file_path = os.path.join(path, filename)
-        parent = os.path.dirname(file_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(file_path, "w") as f:
-            f.write(content)
-    return {'project_dir': runid}
-
-
 # ---------------------------------------------------------------------------
 # Execution layer — detect stack, run in an e2b sandbox, wait until ready
 # ---------------------------------------------------------------------------
@@ -1670,14 +1647,25 @@ INSTALL_COMMANDS = {
     "node": "cd /home/user/project && npm install",
 }
 
-
-def wait_for_ready(sandbox: Sandbox, port: int = 3000, timeout: int = 30) -> bool:
+def wait_for_ready(sandbox, timeout=30):
     start = time.time()
+
     while time.time() - start < timeout:
-        check = sandbox.commands.run(f"curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{port}")
-        if check.stdout.strip().startswith(("2", "3")):
-            return True
+
+        try:
+            result = sandbox.commands.run(
+                "curl -I http://127.0.0.1:3000"
+            )
+
+            if result.exit_code == 0:
+                return True
+
+        except Exception:
+            # Server isn't ready yet.
+            pass
+
         time.sleep(1)
+
     return False
 
 
@@ -2269,7 +2257,6 @@ graph.add_node('format_component_spec', format_component_spec)
 graph.add_node('interaction_spec', interaction_spec_node)
 graph.add_node('format_interaction_spec', format_interaction_spec)
 graph.add_node('static_analyzer', static_analyzer)  # NEW
-graph.add_node('writer', writer)
 graph.add_node('execute_project', execute_project)
 graph.add_node('cleanup_failed_sandbox', cleanup_failed_sandbox)
 graph.add_node('capture_screenshots', capture_screenshots)
@@ -2304,8 +2291,7 @@ graph.add_edge('planner', 'code_generator')
 # pass (fresh generation AND every patch pass, since both feed into writer through
 # this same node) so its findings are already in state before ui_reviewer runs.
 graph.add_edge('code_generator', 'static_analyzer')
-graph.add_edge('static_analyzer', 'writer')
-graph.add_edge('writer', 'execute_project')
+graph.add_edge('static_analyzer', 'execute_project')
 graph.add_conditional_edges(
     'execute_project',
     route_after_execution,
@@ -2360,36 +2346,3 @@ def run_pipeline(prompt: str, reference_image_path: str) -> dict[str, str]:
     result = workflow.invoke({'prompt': prompt, 'reference_image_path': reference_image_path})
     return result['file_code']
 
-
-if __name__ == "__main__":
-    response = workflow.invoke({'prompt': """Design and build a polished, production-ready single-page web app called Ziporg.ai — a "prompt-to-project" generator with the tagline "Unzip your ideas!"
-
-Brand & visual identity
-Primary accent: electric blue #0A68FF ("zip-blue")
-Secondary accent: spark yellow #FFD60A (used for loading/processing states)
-Success green #28A745, error red #DC3545
-Neutrals: near-white canvas #F8F9FA, paper white #FFFFFF, ink #212529, slate #6C757D
-Headings in 'Plus Jakarta Sans' (600-700 weight), body text in 'Inter' (400 weight)
-Consistent 8px-based spacing scale (8/12/16/24/32/48/64/80px) and 8px border radius throughout
-Soft layered shadows (sm/md/lg) and swift 200ms ease-out transitions on all interactive elements
-A 12-column responsive fluid grid (collapsing to 8 columns on tablet)
-
-Core flow (two screens, cross-fade transition between them)
-Home/prompt screen - centered brand header (logo/title + tagline), a single auto-resizing textarea for the user to describe their project idea, inline validation if submitted empty, and a primary "Generate Project" button.
-Project status screen - a pulsing animated progress square, a live status label (Processing -> Complete/Error, color-coded yellow/green/red), a "zipper" progress bar that fills left-to-right with a small tab icon riding along it, and contextual buttons that swap in based on state: Cancel Generation (while processing), Download ZIP (on success), Start New Project (on success or error). Errors show an inline message.
-
-Supporting UI elements
-A toast notification system (top-right, auto-dismiss, slide-in/fade-out)
-A modal dialog for critical errors, with a "Contact Support" action, focus trap, Escape-to-close, and ARIA roles for accessibility
-Skeleton loading blocks (text/block/circle variants) with shimmer animation
-Outlined icon style (2px stroke, rounded caps/joins) with color variants for success/error/spark states
-Full keyboard/ARIA support: aria-live status updates, aria-busy, focus management, disabled states at 50% opacity
-
-Behavior
-Simulate the "generation" as an async process with realistic random delay and an occasional simulated failure, respecting cancellation via an AbortController
-Cancelling prompts a confirmation dialog before discarding progress
-All state transitions (screen changes, button swaps, status colors) should animate smoothly, no jarring pops
-
-Build this as plain HTML/CSS/JS (ES modules), split into logical files: a base stylesheet (tokens, reset, grid, utilities), a components stylesheet (buttons, textarea, status indicators, toasts, skeletons, zipper animation), a small event-bus/utilities module, a modal module, and a main app script wiring up the two-screen flow.""",
-        'reference_image_path': ''})
-    print(response.get('execution_result'))
