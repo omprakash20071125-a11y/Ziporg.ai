@@ -326,6 +326,8 @@ class State(TypedDict):
     execution_result: ExecutionResult
     retry_count: int
     screenshot_spec: ScreenshotSpec | None
+    screenshot_error: str | None         # NEW: last screenshot-capture exception message, if any
+    screenshot_retry_count: int          # NEW: retry counter dedicated to capture_screenshots
     project_dir: str                          # stable run id/dir reused across patch passes
     review_result: UIReviewResult | None
     patch_plan: PatchPlan | None
@@ -335,7 +337,7 @@ class State(TypedDict):
     pre_patch_file_code: dict[str, str] | None  # snapshot of file_code taken before a patch pass,
                                                  # so a regression can be rolled back instead of silently kept
     reverted_due_to_regression: bool            # flag set by regression_guard, used for routing
-    static_check_findings: List[str]            # NEW: deterministic pre-flight findings fed into review/patch
+    static_check_findings: List[str]            # deterministic pre-flight findings fed into review/patch
 
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
@@ -662,7 +664,7 @@ def strip_think_tags(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# NEW: deterministic static-analysis pass over generated code.
+# Deterministic static-analysis pass over generated code.
 #
 # The vision-model UI reviewer is unreliable for two specific, very common
 # failure modes: (a) literal "undefined"/"null"/"NaN" text rendered on screen
@@ -1805,6 +1807,21 @@ def _capture(page, url, path):
             page.wait_for_timeout(2000)
 
 
+# ---------------------------------------------------------------------------
+# MAX_SCREENSHOT_RETRIES: dedicated retry budget just for capture_screenshots.
+#
+# PREVIOUSLY: a Playwright/browser-launch failure here had NO retry path at
+# all — route_after_screenshots routed unconditionally into ui_reviewer,
+# which treated a missing screenshot_spec as "review_result with 0 issues",
+# and route_after_ui_review then silently returned "done" (its
+# `if not review or not review.issues: return "done"` branch), so the whole
+# pipeline finished as if nothing were wrong. That's the exact "retry logic
+# didn't work" symptom — because for THIS failure mode, no retry logic
+# existed in the first place. Fixed below.
+# ---------------------------------------------------------------------------
+MAX_SCREENSHOT_RETRIES = 2
+
+
 def capture_screenshots(state: State) -> State:
 
     result = state.get("execution_result")
@@ -1816,7 +1833,8 @@ def capture_screenshots(state: State) -> State:
     ):
         print("skipping_screenshots_no_live_url")
         return {
-            "screenshot_spec": None
+            "screenshot_spec": None,
+            "screenshot_error": None,
         }
 
     url = result.url
@@ -1911,7 +1929,11 @@ def capture_screenshots(state: State) -> State:
                 desktop=desktop_path,
                 tablet=tablet_path,
                 mobile=mobile_path,
-            )
+            ),
+            # Clear any stale error from a prior failed attempt now that this
+            # attempt succeeded — otherwise a leftover error message from
+            # retry #1 could linger in state and confuse downstream nodes.
+            "screenshot_error": None,
         }
 
     except Exception as e:
@@ -1923,6 +1945,63 @@ def capture_screenshots(state: State) -> State:
             "screenshot_spec": None,
             "screenshot_error": str(e),
         }
+
+
+def bump_screenshot_retry(state: State) -> State:
+    """Increments the dedicated screenshot retry counter and loops back into
+    capture_screenshots. This node exists so a transient/flaky browser launch
+    (or a just-fixed environment issue that still occasionally hiccups) gets
+    a genuine second and third chance instead of failing the whole review
+    step on the first attempt."""
+    retries = state.get('screenshot_retry_count', 0)
+    print(f'screenshot_capture_retry #{retries + 1} (last error: {state.get("screenshot_error")!r})')
+    return {'screenshot_retry_count': retries + 1}
+
+
+def route_after_capture_screenshots(state: State) -> str:
+    """FIX: this is the actual missing retry path. If capture_screenshots
+    succeeded (screenshot_spec is set), behave exactly as before — first pass
+    goes to review, a pass after a patch goes to compare, and a post-revert
+    confirmation shot goes straight to END.
+
+    If it FAILED (screenshot_spec is None) and there's a live URL to retry
+    against, retry up to MAX_SCREENSHOT_RETRIES times before giving up. Only
+    after retries are exhausted does it fall through to ui_reviewer — and at
+    that point ui_reviewer/route_after_ui_review below make the failure loud
+    and explicit in the logs instead of silently completing as if the review
+    passed.
+    """
+    if state.get('screenshot_spec') is not None:
+        if state.get('reverted_due_to_regression'):
+            return "end"
+        if state.get('previous_screenshot_spec'):
+            return "compare"
+        return "review"
+
+    # Screenshot capture failed. Only worth retrying if there's actually a
+    # live URL to point the browser at — if execute_project itself never
+    # produced one, retrying capture_screenshots is pointless.
+    result = state.get('execution_result')
+    has_live_url = bool(result and result.status == "success" and result.url)
+    retries = state.get('screenshot_retry_count', 0)
+
+    if has_live_url and retries < MAX_SCREENSHOT_RETRIES:
+        return "retry_screenshot"
+
+    # Retries exhausted (or nothing to retry against) — fall through to
+    # ui_reviewer, which will now clearly log this as an infrastructure
+    # failure rather than silently treating it as "nothing to review."
+    print(
+        f"screenshot_capture_gave_up_after_retries "
+        f"(retries={retries}, last_error={state.get('screenshot_error')!r})"
+    )
+    if state.get('reverted_due_to_regression'):
+        return "end"
+    if state.get('previous_screenshot_spec'):
+        return "compare"
+    return "review"
+
+
 # ---------------------------------------------------------------------------
 # UI Reviewer — looks at the live screenshots and checks whether the build
 # actually matches the design system / design direction / UX / component /
@@ -1994,13 +2073,31 @@ Return ONLY a valid JSON object matching exactly this schema:
 def ui_reviewer(state: State) -> State:
     spec = state.get('screenshot_spec')
     if not spec:
+        # FIX: this branch is now reached ONLY after MAX_SCREENSHOT_RETRIES
+        # genuine retries (see route_after_capture_screenshots), so it's a
+        # confirmed, persistent infrastructure failure, not a first-attempt
+        # blip. Make that loud in both the log line and the summary text, and
+        # carry the actual exception message through, instead of the old
+        # generic "build likely failed" message that looked identical whether
+        # the site itself was broken or the review tooling was.
+        screenshot_error = state.get('screenshot_error')
+        retries_used = state.get('screenshot_retry_count', 0)
+        summary = (
+            "Screenshot capture failed after "
+            f"{retries_used + 1} attempt(s) — the UI review could NOT run. "
+            "This is an infrastructure/tooling failure (e.g. headless browser "
+            "environment), not necessarily a problem with the generated site "
+            "itself. Ship status is UNVERIFIED, not confirmed-good."
+        )
+        if screenshot_error:
+            summary += f" Last error: {screenshot_error}"
         result = UIReviewResult(
             quality_score=0,
-            summary="No screenshots were available to review (build likely failed before deployment).",
+            summary=summary,
             issues=[],
             meets_bar=False,
         )
-        print('ui_review_skipped_no_screenshots')
+        print(f"ui_review_skipped_screenshot_infra_failure: {screenshot_error!r}")
         return {'review_result': result}
     content = [{"type": "text", "text": UI_REVIEW_INSTRUCTIONS.format(
         design_system_summary=state.get('design_system_summary', ''),
@@ -2059,6 +2156,23 @@ def ui_reviewer(state: State) -> State:
 def route_after_ui_review(state: State) -> str:
     review = state.get('review_result')
     retries = state.get('ui_review_retry_count', 0)
+
+    # FIX: this is the branch that used to silently swallow a screenshot
+    # infra failure. If screenshots never succeeded (screenshot_spec is
+    # still None at this point — i.e. every retry in
+    # route_after_capture_screenshots was exhausted), there is nothing a
+    # code patch can fix: the problem is the review tooling's environment,
+    # not the generated site. Log it loudly and end — but critically, do
+    # NOT let this look like a normal "done" pass. The distinction matters
+    # for anyone reading the logs after the fact.
+    if state.get('screenshot_error') and not state.get('screenshot_spec'):
+        print(
+            "route_after_ui_review: ENDING due to unresolved screenshot "
+            f"infrastructure failure — build was shipped WITHOUT automated "
+            f"UI verification. last_error={state.get('screenshot_error')!r}"
+        )
+        return "done"
+
     if review and review.meets_bar:
         return "done"
     if retries >= MAX_UI_REVIEW_RETRIES:
@@ -2296,21 +2410,6 @@ def screenshot_comparator(state: State) -> State:
     return {'comparison_result': result, 'ui_review_retry_count': retries}
 
 
-def route_after_screenshots(state: State) -> str:
-    """First screenshot pass (no previous) goes straight to review; every
-    subsequent pass (after a patch) goes through the comparator first. If this
-    screenshot pass is itself the confirmation shot taken right after a
-    regression revert+redeploy, skip straight to END instead of re-entering the
-    review/patch loop (which just discarded a patch pass — re-reviewing the
-    same known-good baseline would either loop pointlessly or re-open already
-    considered issues)."""
-    if state.get('reverted_due_to_regression'):
-        return "end"
-    if state.get('previous_screenshot_spec'):
-        return "compare"
-    return "review"
-
-
 # ---------------------------------------------------------------------------
 # regression_guard.
 #
@@ -2318,13 +2417,10 @@ def route_after_screenshots(state: State) -> str:
 # regressions). If it found a regression, this node reverts file_code to the
 # pre-patch snapshot.
 #
-# FIX: previously the "stop" branch went straight to END without re-deploying
-# the reverted files — so execution_result.url kept serving the regressed
-# code even though file_code (and therefore run_pipeline()'s return value) was
-# correctly rolled back. Now a regression routes through writer ->
-# execute_project -> capture_screenshots again so the live sandbox URL and the
-# returned file_code always agree, then route_after_screenshots sends that
-# confirmation pass straight to END (see above) instead of re-entering review.
+# Redeploys through static_analyzer -> execute_project -> capture_screenshots
+# again so the live sandbox URL and the returned file_code always agree, then
+# route_after_capture_screenshots sends that confirmation pass straight to
+# END instead of re-entering review.
 # ---------------------------------------------------------------------------
 def regression_guard(state: State) -> State:
     comp = state.get('comparison_result')
@@ -2367,10 +2463,11 @@ graph.add_node('component_spec', component_spec_node)
 graph.add_node('format_component_spec', format_component_spec)
 graph.add_node('interaction_spec', interaction_spec_node)
 graph.add_node('format_interaction_spec', format_interaction_spec)
-graph.add_node('static_analyzer', static_analyzer)  # NEW
+graph.add_node('static_analyzer', static_analyzer)
 graph.add_node('execute_project', execute_project)
 graph.add_node('cleanup_failed_sandbox', cleanup_failed_sandbox)
 graph.add_node('capture_screenshots', capture_screenshots)
+graph.add_node('bump_screenshot_retry', bump_screenshot_retry)  # NEW
 graph.add_node('ui_reviewer', ui_reviewer)
 graph.add_node('patch_planner', patch_planner)
 graph.add_node('patch_generator', patch_generator)
@@ -2398,7 +2495,7 @@ graph.add_edge('format_interaction_spec', 'design_direction')
 graph.add_edge('design_direction', 'format_design_direction')
 graph.add_edge('format_design_direction', 'planner')
 graph.add_edge('planner', 'code_generator')
-# FIX: run the deterministic static_analyzer immediately after every code-generation
+# run the deterministic static_analyzer immediately after every code-generation
 # pass (fresh generation AND every patch pass, since both feed into writer through
 # this same node) so its findings are already in state before ui_reviewer runs.
 graph.add_edge('code_generator', 'static_analyzer')
@@ -2413,20 +2510,25 @@ graph.add_conditional_edges(
     }
 )
 graph.add_edge('cleanup_failed_sandbox', 'code_generator')
-# capture_screenshots -> (first pass -> ui_reviewer | subsequent pass -> screenshot_comparator | post-revert confirmation -> END)
+# FIX: capture_screenshots now routes through route_after_capture_screenshots,
+# which retries the screenshot step itself (up to MAX_SCREENSHOT_RETRIES) on
+# failure before ever reaching ui_reviewer — this is the retry path that was
+# previously completely missing.
 graph.add_conditional_edges(
     'capture_screenshots',
-    route_after_screenshots,
+    route_after_capture_screenshots,
     {
         "review": 'ui_reviewer',
         "compare": 'screenshot_comparator',
         "end": END,
+        "retry_screenshot": 'bump_screenshot_retry',  # NEW
     }
 )
+graph.add_edge('bump_screenshot_retry', 'capture_screenshots')  # NEW loop-back edge
 graph.add_edge('screenshot_comparator', 'regression_guard')
-# FIX: regression_guard -> (regression found -> revert file_code, redeploy through
+# regression_guard -> (regression found -> revert file_code, redeploy through
 # static_analyzer/writer/execute_project/capture_screenshots so the live URL matches
-# the reverted code, then route_after_screenshots sends it to END | otherwise -> ui_reviewer as before)
+# the reverted code, then route_after_capture_screenshots sends it to END | otherwise -> ui_reviewer as before)
 graph.add_conditional_edges(
     'regression_guard',
     route_after_regression_guard,
@@ -2435,7 +2537,8 @@ graph.add_conditional_edges(
         "review": 'ui_reviewer',
     }
 )
-# ui_reviewer -> (meets_bar / no issues / retries exhausted -> END | otherwise -> patch loop)
+# ui_reviewer -> (meets_bar / no issues / retries exhausted / unresolved screenshot
+# infra failure -> END, loudly logged either way | otherwise -> patch loop)
 graph.add_conditional_edges(
     'ui_reviewer',
     route_after_ui_review,
@@ -2445,7 +2548,7 @@ graph.add_conditional_edges(
     }
 )
 graph.add_edge('patch_planner', 'patch_generator')
-# FIX: patch_generator also flows through static_analyzer before writer, so a patch
+# patch_generator also flows through static_analyzer before writer, so a patch
 # pass is re-checked for broken links / literal undefined text just like a fresh build.
 graph.add_edge('patch_generator', 'static_analyzer')
 
@@ -2456,4 +2559,3 @@ def run_pipeline(prompt: str, reference_image_path: str) -> dict[str, str]:
     """Runs the graph for a given prompt and returns {filename: code}."""
     result = workflow.invoke({'prompt': prompt, 'reference_image_path': reference_image_path})
     return result['file_code']
-
