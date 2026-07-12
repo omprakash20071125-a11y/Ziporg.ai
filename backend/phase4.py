@@ -9,10 +9,14 @@ from langchain_core.messages import HumanMessage
 import time
 import base64
 import os
+import re
+import tempfile
 from pydantic import BaseModel, Field
 from phase2_planner import research
 from dotenv import load_dotenv
 import uuid
+from e2b import Sandbox  # execution sandbox
+from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
@@ -24,6 +28,12 @@ model = ChatGoogleGenerativeAI(
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
+class ScreenshotSpec(BaseModel):
+    desktop: str
+    tablet: str
+    mobile: str
+
 
 class ColorToken(BaseModel):
     name: str
@@ -147,7 +157,7 @@ class research_need(BaseModel):
     research_needed: Literal["true", "false"] = Field(description="whether the research is needed or not")
 
 
-# --- NEW: UX Spec ------------------------------------------------------
+# --- UX Spec ------------------------------------------------------
 
 class UserFlow(BaseModel):
     flow_name: str = Field(description="e.g. 'First-time signup', 'Checkout'")
@@ -177,7 +187,7 @@ class UXSpec(BaseModel):
     error_handling_ux: str = Field(description="How errors are surfaced to the user across the product")
 
 
-# --- NEW: Component Spec ------------------------------------------------
+# --- Component Spec ------------------------------------------------
 
 class ComponentVariant(BaseModel):
     variant_name: str = Field(description="e.g. 'primary', 'secondary', 'destructive'")
@@ -206,7 +216,7 @@ class ComponentSpec(BaseModel):
     reuse_strategy: str = Field(description="How components should be composed/shared across screens to avoid duplication")
 
 
-# --- NEW: Interaction Spec ----------------------------------------------
+# --- Interaction Spec ----------------------------------------------
 
 class InteractionRule(BaseModel):
     trigger: str = Field(description="e.g. 'click', 'hover', 'form submit', 'scroll into view'")
@@ -253,6 +263,55 @@ class all_files(BaseModel):
     files: List[fileplan]
 
 
+# --- Execution schema ------------------------------------------------
+
+class ExecutionResult(BaseModel):
+    status: Literal["success", "failed"]
+    url: str | None
+    sandbox_id: str | None
+    stack_detected: str
+    stderr: str | None
+
+
+# --- UI Review / Patch / Comparison schemas ---------------------------
+
+class UIIssue(BaseModel):
+    issue_id: str = Field(description="short unique id, e.g. 'ISS-1'")
+    severity: Literal["critical", "major", "minor"]
+    category: str = Field(description="e.g. 'layout', 'color', 'typography', 'spacing', 'responsiveness', 'accessibility', 'content', 'interaction'")
+    location: str = Field(description="Where on the page this issue is, e.g. 'hero section', 'nav bar', 'mobile footer'")
+    description: str = Field(description="What's wrong, concretely and specifically")
+    expected: str = Field(description="What the spec (design_system/design_direction/ux/component/interaction) says it should look like")
+    observed: str = Field(description="What the screenshot actually shows")
+    affected_viewport: List[str] = Field(description="Which of desktop/tablet/mobile this issue is visible on")
+
+
+class UIReviewResult(BaseModel):
+    quality_score: int = Field(description="0-100 overall quality score against the established spec")
+    summary: str = Field(description="Two or three sentence overall assessment of the current build")
+    issues: List[UIIssue] = Field(description="Concrete, specific issues found — empty list if none")
+    meets_bar: bool = Field(description="True if quality_score/issues are acceptable to ship as-is, false if another patch pass is needed")
+
+
+class PatchItem(BaseModel):
+    filename: str = Field(description="Exact filename to modify, must match an existing generated file")
+    change_description: str = Field(description="Concrete, specific instruction describing exactly what to change in this file and why")
+    related_issue_ids: List[str] = Field(description="issue_id values from the review this change addresses")
+    change_type: Literal["style", "layout", "content", "behavior", "accessibility", "responsive"]
+
+
+class PatchPlan(BaseModel):
+    patches: List[PatchItem] = Field(description="File-level change instructions — no code, just precise instructions")
+    reasoning: str = Field(description="Why these specific changes address the reviewed issues, and why nothing else needs to change")
+
+
+class ComparisonResult(BaseModel):
+    improved: bool = Field(description="True if the AFTER screenshots are a genuine visual/functional improvement over BEFORE")
+    score_delta: int = Field(description="Estimated change in quality score, new minus old (can be negative)")
+    reasoning: str = Field(description="Concrete comparison of what changed between before/after screenshots")
+    remaining_concerns: List[str] = Field(description="Anything still not matching spec after this patch pass")
+
+
 class State(TypedDict):
     prompt: str
     reference_image_path: str
@@ -275,10 +334,33 @@ class State(TypedDict):
     research_context: str
     fileplans: all_files
     file_code: dict[str, str]
+    execution_result: ExecutionResult
+    retry_count: int
+    screenshot_spec: ScreenshotSpec | None
+    project_dir: str                          # stable run id/dir reused across patch passes
+    review_result: UIReviewResult | None
+    patch_plan: PatchPlan | None
+    previous_screenshot_spec: ScreenshotSpec | None
+    comparison_result: ComparisonResult | None
+    ui_review_retry_count: int
+    pre_patch_file_code: dict[str, str] | None  # snapshot of file_code taken before a patch pass,
+                                                 # so a regression can be rolled back instead of silently kept
+    reverted_due_to_regression: bool            # flag set by regression_guard, used for routing
 
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
-coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free")
+
+# coding_model: the model that actually writes every generated/patched file. This is the single
+# highest-leverage lever on final code/UI quality in this whole pipeline — everything upstream
+# (design_system, ux_spec, component_spec, interaction_spec, design_direction, planner) only ever
+# produces instructions; this model is what turns those instructions into real HTML/CSS/JS.
+#
+# FIX: model string is now overridable via the CODING_MODEL env var so swapping to a paid model
+# (e.g. "deepseek/deepseek-v4-pro", "openai/gpt-4.1", "anthropic/claude-sonnet-4") doesn't require
+# touching this file — just set CODING_MODEL in your environment/.env. Defaults to the free tier
+# model if unset, so behavior is unchanged unless you opt in.
+CODING_MODEL_NAME = os.environ.get("CODING_MODEL", "openai/gpt-oss-20b:free")
+coding_model = ChatOpenRouter(model=CODING_MODEL_NAME, temperature=0)
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
 visual languages — not one-off page styles. Your job is to convert a requirement spec and a product's
@@ -601,6 +683,30 @@ Return ONLY a valid JSON object (no markdown fences, no commentary) matching exa
 
 
 # ---------------------------------------------------------------------------
+# Helper: strip reasoning traces
+# ---------------------------------------------------------------------------
+
+def strip_think_tags(text: str) -> str:
+    """Some OpenRouter models (reasoning models, and some free-tier models
+    under load) prepend a <think>...</think> reasoning block before the actual
+    answer. CODE_GEN_TEMPLATE and PATCH_GEN_TEMPLATE both require the response's
+    first character to be raw code — an unstripped reasoning block breaks that
+    contract and corrupts the generated file. Applied to every coding_model
+    response before it's used."""
+    if not text:
+        return text
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Some providers use different tag names for the same behavior.
+    cleaned = re.sub(r"<reasoning>.*?</reasoning>", "", cleaned, flags=re.DOTALL)
+    # Strip stray markdown code fences in case the model ignores the "no fences" rule.
+    cleaned = cleaned.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
+        cleaned = re.sub(r"```$", "", cleaned.rstrip())
+    return cleaned.strip()
+
+
+# ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
 
@@ -640,7 +746,9 @@ def get_image_schema(state: State) -> State:
         {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
 
-    structured_model = groq_model.with_structured_output(PageSpec)
+    # Uses `model` (Gemini, multimodal) — a text-only model here would silently
+    # fail to process the image_url content block.
+    structured_model = model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     print('schema_fetched')
     return {'overall_image_design': result}
@@ -1014,6 +1122,12 @@ Error handling UX: {ux.error_handling_ux}"""
 
 
 def component_spec_node(state: State) -> State:
+    """FIX: switched from groq_model (Llama 3.3 70B) to `model` (Gemini 2.5 Flash),
+    matching every other spec node. ComponentSpec is deeply nested (components ->
+    variants -> states, all as separate list-of-object fields) — this is exactly the
+    shape where a smaller/free model's structured-output tool-calling is more prone
+    to dropped fields or malformed nesting. No functional reason this one was the
+    odd one out; normalizing it improves reliability at negligible cost difference."""
     ux = state.get('ux_spec')
     ds = state.get('design_system')
     product = state.get('product_specification')
@@ -1027,7 +1141,7 @@ def component_spec_node(state: State) -> State:
         'screens', 'key_elements', 'colors', 'typography', 'spacing_scale', 'border_radius',
         'icon_style', 'personality', 'design_keywords'
     ])
-    struct_model = groq_model.with_structured_output(ComponentSpec)
+    struct_model = model.with_structured_output(ComponentSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'screens': screens,
@@ -1267,6 +1381,9 @@ RULES:
 13. If design_schema, ux_summary, or component_summary describe structural elements, reflect that
     structure explicitly in the relevant file's responsibilities — don't flatten it into a vague
     "build the homepage" instruction.
+14. If this is a Python project, name the runnable entry-point file `app.py` whenever practical —
+    the execution layer prefers this name, though it will also detect other .py entry points if
+    `app.py` isn't produced.
 
 ---
 
@@ -1323,6 +1440,29 @@ CODE_GEN_TEMPLATE = """You are an expert software engineer generating one file a
 
 This is the already generated code of files this one depends on — if empty, do not consider it: {code}
 Analyse the blueprint: {blueprint}
+
+---
+
+PREVIOUS ATTEMPT FAILED (if empty, this is a first attempt — ignore this section entirely):
+{previous_error}
+
+If the section above is non-empty, this project was already generated once and failed to run in the
+execution sandbox. Treat this as a BUG FIX pass, not a fresh generation:
+1. Read the error carefully — it tells you the actual failure (stack trace, missing module, syntax
+   error, non-2xx server response, timeout, etc.).
+2. If the error clearly implicates THIS file (its filename appears in the traceback, or its
+   responsibilities obviously match the failure — e.g. a missing import this file should provide,
+   a route this file should define, a syntax error class matching this file's language), you MUST
+   fix that specific problem. Do not just regenerate similar code and hope — address the exact
+   failure mode described.
+3. If the error does NOT implicate this file, generate it normally per the blueprint, but avoid
+   reintroducing anything that could plausibly cause the same class of failure (e.g. if the error
+   was a missing dependency, double check this file's imports/requires are all satisfied by
+   depends_on or a real package; if it was an undefined name/route/element, make sure this file
+   doesn't reference anything not defined here or in a dependency).
+4. Do not silently drop functionality to avoid the error — fix the actual cause.
+
+---
 
 Your ONLY job is to generate the complete, correct code for THIS ONE FILE.
 
@@ -1453,6 +1593,15 @@ def code_generator(state: State) -> State:
       design_system_summary) instead of calling the format_* nodes as helper
       functions — those are graph nodes with signature (state: State) -> State now,
       not (SomeSpec) -> str helpers.
+    - pulls the previous execution_result's stderr (if this is a retry pass
+      after a failed sandbox run) and feeds it into the prompt so the model is
+      patching a known bug instead of blindly regenerating from scratch.
+
+    KNOWN LIMITATION (left as-is, flagging for visibility): on a sandbox failure
+    this still regenerates every file, not just the one implicated by stderr.
+    Splitting that out safely needs error->filename attribution logic first;
+    doing it naively risks silently leaving a broken file in place. Fine as a
+    v2 improvement, not touched here to avoid destabilizing the retry path.
     """
     plan = state['fileplans']
     ordered_files = sorted(plan.files, key=lambda f: f.generate_order)
@@ -1467,6 +1616,14 @@ def code_generator(state: State) -> State:
     design_direction_ctx = state.get('design_direction_summary', "No design direction was generated.")
     design_system_ctx = state.get('design_system_summary', "No design system was generated.")
 
+    execution_result = state.get('execution_result')
+    previous_error_ctx = ""
+    if execution_result and execution_result.status == "failed" and execution_result.stderr:
+        previous_error_ctx = (
+            f"stack_detected: {execution_result.stack_detected}\n"
+            f"stderr:\n{execution_result.stderr}"
+        )
+
     code_for_each_file: dict[str, str] = {}
 
     prompt = PromptTemplate(
@@ -1474,7 +1631,7 @@ def code_generator(state: State) -> State:
         input_variables=[
             'blueprint', 'file', 'description', 'responsibilities',
             'depends_on', 'package', 'research_context', 'image_description',
-            'design_system', 'design_direction', 'code'
+            'design_system', 'design_direction', 'code', 'previous_error'
         ]
     )
     chain = prompt | coding_model | StrOutputParser()
@@ -1498,12 +1655,657 @@ def code_generator(state: State) -> State:
             'design_system': design_system_ctx,
             'design_direction': design_direction_ctx,
             'code': dep_context,
+            'previous_error': previous_error_ctx,
         })
 
-        code_for_each_file[f.filename] = response
-        print('code_generator_done')
+        # Strip any reasoning-trace / stray markdown fence the coding_model might
+        # emit before the raw code — rule #30 requires the first character of the
+        # file to be actual code, and unstripped output would otherwise corrupt
+        # the written file.
+        code_for_each_file[f.filename] = strip_think_tags(response)
+        print(f'code_generator_done: {f.filename}')
 
     return {'file_code': code_for_each_file}
+
+
+# writer node
+def writer(state: State) -> State:
+    """Writes state['file_code'] to disk. Reuses the same project_dir across
+    patch passes (instead of a fresh random dir every call) so the on-disk copy
+    of a patched project lands next to its original, pre-patch version."""
+    base_dir = os.environ.get(
+        "OUTPUT_DIR",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_projects"),
+    )
+    runid = state.get('project_dir') or str(uuid.uuid4())
+
+    path = os.path.join(base_dir, runid)
+    os.makedirs(path, exist_ok=True)
+
+    for filename, content in state['file_code'].items():
+        file_path = os.path.join(path, filename)
+
+        parent = os.path.dirname(file_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        with open(file_path, "w") as f:
+            f.write(content)
+
+    return {'project_dir': runid}
+
+
+# ---------------------------------------------------------------------------
+# Execution layer — detect stack, run in an e2b sandbox, wait until ready
+# ---------------------------------------------------------------------------
+
+def detect_stack(file_code: dict[str, str]) -> str:
+    """Detect stack from what was ACTUALLY generated (file_code), not from what the
+    planner intended (fileplans). A planner entry for package.json means nothing if
+    code_generator never actually produced that file."""
+    filenames = set(file_code.keys())
+    if "package.json" in filenames:
+        return "node"
+    if "requirements.txt" in filenames:
+        return "python"
+    if any(f.endswith(".py") for f in filenames):
+        return "python"  # python files with no requirements.txt — may have zero deps
+    return "static"
+
+
+def detect_python_entrypoint(file_code: dict[str, str]) -> str:
+    """FIX: previously RUN_COMMANDS['python'] hardcoded 'python3 app.py'. If the
+    planner/code_generator named the entry file anything else (main.py, server.py,
+    run.py, etc.), execution would fail for a reason unrelated to code quality.
+    Prefer app.py if present (it's still the conventional/requested name — see the
+    planner prompt's rule #14), otherwise fall back to the first .py file generated,
+    sorted for determinism."""
+    if "app.py" in file_code:
+        return "app.py"
+    py_files = sorted(f for f in file_code if f.endswith(".py"))
+    return py_files[0] if py_files else "app.py"
+
+
+RUN_COMMANDS_STATIC_NODE = {
+    "static": "cd /home/user/project && python3 -m http.server 3000",
+    "node": "cd /home/user/project && npm run dev -- --host 0.0.0.0 --port 3000",
+}
+INSTALL_COMMANDS = {
+    "static": None,
+    "python": "cd /home/user/project && pip install -r requirements.txt",
+    "node": "cd /home/user/project && npm install",
+}
+
+
+def get_run_command(stack: str, file_code: dict[str, str]) -> str:
+    if stack == "python":
+        entry = detect_python_entrypoint(file_code)
+        return f"cd /home/user/project && python3 {entry}"
+    return RUN_COMMANDS_STATIC_NODE[stack]
+
+
+def wait_for_ready(sandbox: Sandbox, port: int = 3000, timeout: int = 30) -> bool:
+    start = time.time()
+    while time.time() - start < timeout:
+        check = sandbox.commands.run(f"curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{port}")
+        if check.stdout.strip().startswith(("2", "3")):
+            return True
+        time.sleep(1)
+    return False
+
+
+def execute_project(state: State) -> State:
+    file_code = state['file_code']
+    stack = detect_stack(file_code)
+    sandbox = Sandbox.create(timeout=1200)  # 20 min — survives the review/patch loop later
+
+    try:
+        for filename, content in file_code.items():
+            sandbox.files.write(f"/home/user/project/{filename}", content)
+
+        if stack == "static" and "index.html" not in file_code:
+            return {'execution_result': ExecutionResult(
+                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
+                stack_detected=stack,
+                stderr="No index.html among generated files — static site has no entry point.",
+            )}
+
+        if stack == "node" and "package.json" not in file_code:
+            return {'execution_result': ExecutionResult(
+                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
+                stack_detected=stack,
+                stderr="Node stack detected but package.json was not generated.",
+            )}
+
+        install_cmd = INSTALL_COMMANDS[stack]
+        if stack == "python" and "requirements.txt" not in file_code:
+            install_cmd = None
+
+        if install_cmd:
+            result = sandbox.commands.run(install_cmd, timeout=180)
+            if result.exit_code != 0:
+                return {'execution_result': ExecutionResult(
+                    status="failed", url=None, sandbox_id=sandbox.sandbox_id,
+                    stack_detected=stack, stderr=result.stderr,
+                )}
+
+        run_cmd = get_run_command(stack, file_code)
+        sandbox.commands.run(run_cmd, background=True)
+
+        if not wait_for_ready(sandbox):
+            return {'execution_result': ExecutionResult(
+                status="failed", url=None, sandbox_id=sandbox.sandbox_id,
+                stack_detected=stack, stderr="Server did not become ready in time",
+            )}
+
+        print('execution_project_done')
+        return {'execution_result': ExecutionResult(
+            status="success", url=f"https://{sandbox.get_host(3000)}",
+            sandbox_id=sandbox.sandbox_id, stack_detected=stack, stderr=None,
+        )}
+    except Exception as e:
+        return {'execution_result': ExecutionResult(
+            status="failed", url=None, sandbox_id=sandbox.sandbox_id,
+            stack_detected=stack, stderr=str(e),
+        )}
+
+
+def cleanup_failed_sandbox(state: State) -> State:
+    """Kills the sandbox from a failed execution attempt and bumps the retry counter
+    before looping back to code_generator for a fresh attempt."""
+    result = state.get('execution_result')
+    retries = state.get('retry_count', 0)
+    if result and result.sandbox_id:
+        try:
+            sandbox = Sandbox.connect(result.sandbox_id)
+            sandbox.kill()
+        except Exception:
+            pass  # sandbox may already be gone — nothing to clean up
+    print(f'killed failed sandbox, retry #{retries + 1}')
+    return {'retry_count': retries + 1}
+
+
+def route_after_execution(state: State) -> str:
+    """Conditional edge: success moves on, failure retries up to 2 times, then gives up."""
+    if state['execution_result'].status == "success":
+        return "success"
+    if state.get('retry_count', 0) >= 2:
+        return "give_up"
+    return "retry"
+
+
+# ---------------------------------------------------------------------------
+# Screenshot node — opens the live sandbox URL and captures desktop / tablet /
+# mobile screenshots. This node only CAPTURES; it does not judge the UI.
+# The ui_reviewer node compares these against the specs and decides whether
+# fixes are needed.
+# ---------------------------------------------------------------------------
+
+def capture_screenshots(state: State) -> State:
+    result = state.get('execution_result')
+
+    if not result or result.status != "success" or not result.url:
+        print('skipping_screenshots_no_live_url')
+        return {'screenshot_spec': None}
+
+    url = result.url
+    run_id = str(uuid.uuid4())[:8]
+    out_dir = tempfile.gettempdir()
+
+    desktop_path = os.path.join(out_dir, f"desktop_{run_id}.png")
+    tablet_path = os.path.join(out_dir, f"tablet_{run_id}.png")
+    mobile_path = os.path.join(out_dir, f"mobile_{run_id}.png")
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            page.goto(url, timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_timeout(3000)  # let animations/late JS settle
+
+            page.set_viewport_size({"width": 1920, "height": 1080})
+            page.wait_for_timeout(500)
+            page.screenshot(path=desktop_path, full_page=True)
+
+            page.set_viewport_size({"width": 768, "height": 1024})
+            page.reload(timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_timeout(2000)
+            page.screenshot(path=tablet_path, full_page=True)
+
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.reload(timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_timeout(2000)
+            page.screenshot(path=mobile_path, full_page=True)
+
+            browser.close()
+
+        new_spec = ScreenshotSpec(desktop=desktop_path, tablet=tablet_path, mobile=mobile_path)
+
+        previous = state.get('screenshot_spec')
+
+        print('screenshots_captured')
+        return {'screenshot_spec': new_spec, 'previous_screenshot_spec': previous}
+
+    except Exception as e:
+        print(f'screenshot_capture_failed: {e}')
+        return {'screenshot_spec': None}
+
+
+# ---------------------------------------------------------------------------
+# UI Reviewer — looks at the live screenshots and checks whether the build
+# actually matches the design system / design direction / UX / component /
+# interaction specs. Produces a quality score + a concrete issue list.
+# ---------------------------------------------------------------------------
+
+def _encode_image(path: str) -> str | None:
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+UI_REVIEW_INSTRUCTIONS = """You are a meticulous senior UI/UX reviewer auditing a freshly generated,
+live website. You are shown its desktop, tablet, and mobile screenshots plus the specs it was
+supposed to be built against. Your job is to find every real, concrete gap between the spec and
+what was actually shipped — not to nitpick subjective taste.
+
+---
+design_system (token ground truth — colors, type, spacing, radius, shadows, icon/animation style):
+{design_system_summary}
+
+design_direction (creative signature — palette foregrounding, signature_element, copy_voice):
+{design_direction_summary}
+
+ux_spec (screens, navigation, flows, responsive behavior, accessibility, empty states, error handling):
+{ux_summary}
+
+component_spec (reusable components, variants, states):
+{component_summary}
+
+interaction_spec (micro-interactions, validation, loading/error states, transitions):
+{interaction_summary}
+
+original user request (for grounding — what was actually asked for):
+{query}
+
+---
+INSTRUCTIONS
+
+1. Check color usage, typography, spacing, and border radius against design_system's exact token
+   values — flag any visible mismatch (wrong hue, inconsistent spacing, wrong font, etc.).
+2. Check whether the signature_element from design_direction is actually present and well executed.
+3. Check that copy on the page matches copy_voice (no generic filler if the spec asked for specific,
+   active-voice copy).
+4. Check that the UX spec's key_elements are actually visible for each screen shown, and that
+   responsive_behavior is respected across the desktop/tablet/mobile screenshots (broken layouts,
+   overflow, illegible text, elements overlapping = real issues).
+5. Check accessibility_requirements as far as visually verifiable (contrast, visible focus states if
+   shown, readable text sizes).
+6. Only report ISSUES that are visually verifiable in the screenshots — do not invent problems you
+   cannot see. Do not flag things that are simply a matter of taste if they don't contradict the
+   spec.
+7. Assign severity: critical = breaks usability or badly contradicts the spec; major = clearly wrong
+   but page still usable; minor = small polish issue.
+8. Give an overall quality_score 0-100 reflecting how close this build is to the spec (100 = spec
+   perfectly executed, no issues).
+9. Set meets_bar = true only if quality_score is high (broadly, 85+) AND there are no critical or
+   major issues remaining. Otherwise false.
+
+Return ONLY a valid JSON object matching exactly this schema:
+{{
+  "quality_score": int,
+  "summary": string,
+  "issues": [{{"issue_id": string, "severity": "critical"|"major"|"minor", "category": string, "location": string, "description": string, "expected": string, "observed": string, "affected_viewport": [string, ...]}}, ...],
+  "meets_bar": bool
+}}
+"""
+
+
+def ui_reviewer(state: State) -> State:
+    spec = state.get('screenshot_spec')
+    if not spec:
+        result = UIReviewResult(
+            quality_score=0,
+            summary="No screenshots were available to review (build likely failed before deployment).",
+            issues=[],
+            meets_bar=False,
+        )
+        print('ui_review_skipped_no_screenshots')
+        return {'review_result': result}
+
+    content = [{"type": "text", "text": UI_REVIEW_INSTRUCTIONS.format(
+        design_system_summary=state.get('design_system_summary', ''),
+        design_direction_summary=state.get('design_direction_summary', ''),
+        ux_summary=state.get('ux_summary', ''),
+        component_summary=state.get('component_summary', ''),
+        interaction_summary=state.get('interaction_summary', ''),
+        query=state.get('new_request', ''),
+    )}]
+
+    for label, path in [("DESKTOP (1920x1080)", spec.desktop), ("TABLET (768x1024)", spec.tablet),
+                         ("MOBILE (390x844)", spec.mobile)]:
+        b64 = _encode_image(path)
+        if b64:
+            content.append({"type": "text", "text": f"--- {label} screenshot ---"})
+            content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
+
+    message = HumanMessage(content=content)
+    structured_model = model.with_structured_output(UIReviewResult)
+    result = structured_model.invoke([message])
+    print(f'ui_review_done score={result.quality_score} meets_bar={result.meets_bar} issues={len(result.issues)}')
+    return {'review_result': result}
+
+
+def route_after_ui_review(state: State) -> str:
+    review = state.get('review_result')
+    retries = state.get('ui_review_retry_count', 0)
+    if review and review.meets_bar:
+        return "done"
+    if retries >= MAX_UI_REVIEW_RETRIES:
+        return "done"
+    if not review or not review.issues:
+        return "done"
+    return "patch"
+
+
+# ---------------------------------------------------------------------------
+# Patch Planner — turns the review's issue list into concrete, file-level
+# change instructions. No code here, only precise instructions.
+# ---------------------------------------------------------------------------
+
+PATCH_PLANNER_TEMPLATE = """You are a senior frontend tech lead turning a UI review's issue list into
+a precise, minimal set of file-level patch instructions. You do NOT write code — you write exact
+instructions the patch generator will follow file-by-file.
+
+---
+ISSUES FOUND BY THE REVIEWER:
+{issues}
+
+---
+FILES THAT EXIST IN THIS PROJECT (only reference these — never invent a new filename):
+{files}
+
+design_system (token ground truth): {design_system_summary}
+design_direction (creative signature): {design_direction_summary}
+
+---
+INSTRUCTIONS
+
+1. For every issue, decide which existing file is responsible for the fix (e.g. a color/spacing
+   issue usually belongs in the stylesheet; a missing element or wrong copy usually belongs in the
+   markup; a broken interaction belongs in the JS file) — use `filename` values exactly as listed
+   above, never a filename that doesn't exist in the project.
+2. Group multiple issues that touch the same file into one PatchItem's change_description if they're
+   related, but keep unrelated fixes to the same file as separate PatchItem entries so the reasoning
+   stays traceable.
+3. change_description must be a concrete, specific instruction (e.g. "Increase hero section top/bottom
+   padding to 64px per the spacing scale" or "Fix button hover state to use the Signal Coral token"),
+   never vague ("improve styling").
+4. Every PatchItem must list the issue_id(s) it addresses in related_issue_ids.
+5. Do not propose a patch for a minor issue if fixing it risks destabilizing something already
+   working, unless it's trivial and low-risk.
+6. Ignore issues you cannot map to any existing file.
+
+---
+OUTPUT FORMAT
+Return ONLY a valid JSON object matching exactly this schema:
+{{
+  "patches": [{{"filename": string, "change_description": string, "related_issue_ids": [string, ...], "change_type": "style"|"layout"|"content"|"behavior"|"accessibility"|"responsive"}}, ...],
+  "reasoning": string
+}}
+"""
+
+
+def patch_planner(state: State) -> State:
+    review = state.get('review_result')
+    plan = state.get('fileplans')
+    file_code = state.get('file_code', {})
+
+    if not review or not review.issues:
+        print('patch_planner_skipped_no_issues')
+        return {'patch_plan': PatchPlan(patches=[], reasoning="No issues to patch.")}
+
+    issues_ctx = "\n".join(
+        f"[{i.issue_id}] severity={i.severity} category={i.category} location={i.location}\n"
+        f"  description: {i.description}\n  expected: {i.expected}\n  observed: {i.observed}\n"
+        f"  affected_viewport: {i.affected_viewport}"
+        for i in review.issues
+    )
+    if plan:
+        files_ctx = "\n".join(f"- {f.filename} ({f.language}): {f.purpose}" for f in plan.files)
+    else:
+        files_ctx = "\n".join(f"- {fn}" for fn in file_code.keys())
+
+    prompt = PromptTemplate(template=PATCH_PLANNER_TEMPLATE, input_variables=[
+        'issues', 'files', 'design_system_summary', 'design_direction_summary'
+    ])
+    struct_model = model.with_structured_output(PatchPlan)
+    chain = prompt | struct_model
+    response = chain.invoke({
+        'issues': issues_ctx,
+        'files': files_ctx,
+        'design_system_summary': state.get('design_system_summary', ''),
+        'design_direction_summary': state.get('design_direction_summary', ''),
+    })
+    print(f'patch_planner_done patches={len(response.patches)}')
+    return {'patch_plan': response}
+
+
+# ---------------------------------------------------------------------------
+# Patch Generator — applies ONLY the planned changes to the existing files,
+# instead of regenerating the whole project from scratch.
+# ---------------------------------------------------------------------------
+
+PATCH_GEN_TEMPLATE = """You are an expert software engineer applying a precise, minimal patch to an
+existing file that is already part of a working project. Do NOT rewrite the file from scratch — start
+from the existing code and change only what the instructions below require.
+
+---
+EXISTING FILE CONTENT ({filename}):
+{existing_code}
+
+---
+REQUIRED CHANGES (apply all of these, and nothing else):
+{changes}
+
+---
+design_system (token ground truth — use these exact values for anything you touch): {design_system}
+design_direction (creative signature — stay consistent with this if you touch visuals): {design_direction}
+
+---
+RULES
+
+1. Preserve everything in the existing file that is not related to the required changes —
+   structure, naming, IDs, functions, comments — untouched.
+2. Apply every listed change concretely and completely.
+3. Do not introduce new dependencies, new files, or references to filenames/IDs that don't already
+   exist in this file or its established structure.
+4. Any value you introduce (color, spacing, font, radius) must come from design_system/design_direction
+   above — never invent a new raw value if a token already covers it.
+5. Your response must contain ONLY the complete, updated raw file content.
+   Do NOT wrap it in markdown code fences. Do NOT add commentary. The first character of your
+   response must be actual code.
+"""
+
+
+def patch_generator(state: State) -> State:
+    patch_plan = state.get('patch_plan')
+    file_code = dict(state.get('file_code', {}))
+
+    if not patch_plan or not patch_plan.patches:
+        print('patch_generator_skipped_no_patches')
+        return {'file_code': file_code}
+
+    # Snapshot file_code BEFORE any patch is applied. screenshot_comparator judges
+    # the resulting AFTER screenshots against this BEFORE state; if the patch pass
+    # turns out to be a regression, regression_guard uses this snapshot to roll
+    # back instead of silently keeping a worse build.
+    pre_patch_snapshot = dict(file_code)
+
+    patches_by_file: dict[str, list[PatchItem]] = {}
+    for p in patch_plan.patches:
+        patches_by_file.setdefault(p.filename, []).append(p)
+
+    prompt = PromptTemplate(
+        template=PATCH_GEN_TEMPLATE,
+        input_variables=['filename', 'existing_code', 'changes', 'design_system', 'design_direction']
+    )
+    chain = prompt | coding_model | StrOutputParser()
+
+    for filename, patches in patches_by_file.items():
+        existing = file_code.get(filename)
+        if existing is None:
+            print(f'patch_skipped_missing_file: {filename}')
+            continue
+
+        changes_text = "\n".join(
+            f"- ({p.change_type}) {p.change_description} [addresses: {', '.join(p.related_issue_ids)}]"
+            for p in patches
+        )
+
+        response = chain.invoke({
+            'filename': filename,
+            'existing_code': existing,
+            'changes': changes_text,
+            'design_system': state.get('design_system_summary', ''),
+            'design_direction': state.get('design_direction_summary', ''),
+        })
+        # Same reasoning-trace / stray-fence stripping as code_generator.
+        file_code[filename] = strip_think_tags(response)
+        print(f'patched_file: {filename}')
+
+    return {'file_code': file_code, 'pre_patch_file_code': pre_patch_snapshot}
+
+
+# ---------------------------------------------------------------------------
+# Screenshot Comparator — compares BEFORE/AFTER screenshots to judge whether
+# the patch pass produced a genuine visual improvement.
+# ---------------------------------------------------------------------------
+
+COMPARATOR_INSTRUCTIONS = """You are comparing BEFORE and AFTER screenshots of the same website after
+a patch pass intended to fix specific issues. Judge honestly whether the AFTER screenshots are a real
+improvement, a regression, or unchanged.
+
+---
+Issues the patch pass was supposed to fix:
+{issues}
+
+Prior quality_score (before this patch pass): {prev_score}
+
+---
+INSTRUCTIONS
+
+1. Compare each BEFORE/AFTER pair (desktop, tablet, mobile) directly.
+2. Judge whether the specific issues listed above appear to be resolved in the AFTER screenshots.
+3. Flag any regression — anything that looks worse in AFTER than BEFORE, even if unrelated to the
+   listed issues.
+4. Estimate score_delta as your best-guess change in overall quality score (can be negative if this
+   patch pass made things worse).
+5. List any concerns that still remain unresolved in remaining_concerns.
+
+Return ONLY a valid JSON object matching exactly this schema:
+{{
+  "improved": bool,
+  "score_delta": int,
+  "reasoning": string,
+  "remaining_concerns": [string, ...]
+}}
+"""
+
+
+def screenshot_comparator(state: State) -> State:
+    prev = state.get('previous_screenshot_spec')
+    curr = state.get('screenshot_spec')
+    retries = state.get('ui_review_retry_count', 0) + 1
+
+    if not prev or not curr:
+        print('comparator_skipped_no_previous_screenshots')
+        return {
+            'comparison_result': ComparisonResult(
+                improved=True, score_delta=0,
+                reasoning="No previous screenshots were available to compare against.",
+                remaining_concerns=[],
+            ),
+            'ui_review_retry_count': retries,
+        }
+
+    review = state.get('review_result')
+    issues_ctx = "\n".join(f"[{i.issue_id}] {i.description}" for i in review.issues) if review else "none"
+    prev_score = review.quality_score if review else None
+
+    content = [{"type": "text", "text": COMPARATOR_INSTRUCTIONS.format(
+        issues=issues_ctx, prev_score=prev_score,
+    )}]
+
+    for label, path in [("BEFORE - Desktop", prev.desktop), ("AFTER - Desktop", curr.desktop),
+                         ("BEFORE - Tablet", prev.tablet), ("AFTER - Tablet", curr.tablet),
+                         ("BEFORE - Mobile", prev.mobile), ("AFTER - Mobile", curr.mobile)]:
+        b64 = _encode_image(path)
+        if b64:
+            content.append({"type": "text", "text": f"--- {label} ---"})
+            content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
+
+    message = HumanMessage(content=content)
+    struct_model = model.with_structured_output(ComparisonResult)
+    result = struct_model.invoke([message])
+    print(f'comparator_done improved={result.improved} delta={result.score_delta} retry#{retries}')
+    return {'comparison_result': result, 'ui_review_retry_count': retries}
+
+
+def route_after_screenshots(state: State) -> str:
+    """FIX: a revert-redeploy pass (triggered after regression_guard reverted
+    file_code and routed back through writer/execute_project so the live URL
+    matches the reverted code) must NOT re-enter the review/patch loop — that
+    would either loop forever or immediately re-detect the same "improvement"
+    the loop already gave up on. If reverted_due_to_regression is set, this
+    screenshot pass exists only to confirm the last-known-good build is live;
+    go straight to END."""
+    if state.get('reverted_due_to_regression'):
+        return "done"
+    if state.get('previous_screenshot_spec'):
+        return "compare"
+    return "review"
+
+
+# ---------------------------------------------------------------------------
+# regression_guard.
+#
+# screenshot_comparator computes comparison_result (improved / score_delta /
+# regressions), but on its own nothing acts on it. This node sits between
+# screenshot_comparator and the rest of the loop:
+#
+# - If the comparator found a regression, file_code is reverted to the
+#   pre-patch snapshot. FIX: routing now sends this back through
+#   writer -> execute_project -> capture_screenshots (skipping review, per
+#   route_after_screenshots above) so the live sandbox URL actually serves the
+#   reverted code. Previously this went straight to END, leaving the live URL
+#   pointing at the regressed build while file_code (the returned value)
+#   silently held the reverted version — the two would disagree.
+# - Otherwise, proceeds to ui_reviewer as before.
+# ---------------------------------------------------------------------------
+
+def regression_guard(state: State) -> State:
+    comp = state.get('comparison_result')
+    pre = state.get('pre_patch_file_code')
+
+    if comp and not comp.improved and pre:
+        print('regression_detected: reverting file_code to pre-patch snapshot')
+        return {'file_code': pre, 'reverted_due_to_regression': True}
+
+    return {'reverted_due_to_regression': False}
+
+
+def route_after_regression_guard(state: State) -> str:
+    if state.get('reverted_due_to_regression'):
+        return "redeploy_reverted"
+    return "review"
+
+
+MAX_UI_REVIEW_RETRIES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -1529,6 +2331,15 @@ graph.add_node('component_spec', component_spec_node)
 graph.add_node('format_component_spec', format_component_spec)
 graph.add_node('interaction_spec', interaction_spec_node)
 graph.add_node('format_interaction_spec', format_interaction_spec)
+graph.add_node('writer', writer)
+graph.add_node('execute_project', execute_project)
+graph.add_node('cleanup_failed_sandbox', cleanup_failed_sandbox)
+graph.add_node('capture_screenshots', capture_screenshots)
+graph.add_node('ui_reviewer', ui_reviewer)
+graph.add_node('patch_planner', patch_planner)
+graph.add_node('patch_generator', patch_generator)
+graph.add_node('screenshot_comparator', screenshot_comparator)
+graph.add_node('regression_guard', regression_guard)
 
 graph.add_edge(START, 'query_optimizer')
 graph.add_edge('query_optimizer', 'call_researchor_or_not')
@@ -1552,7 +2363,56 @@ graph.add_edge('format_interaction_spec', 'design_direction')
 graph.add_edge('design_direction', 'format_design_direction')
 graph.add_edge('format_design_direction', 'planner')
 graph.add_edge('planner', 'code_generator')
-graph.add_edge('code_generator', END)
+graph.add_edge('code_generator', 'writer')
+
+graph.add_edge('writer', 'execute_project')
+graph.add_conditional_edges(
+    'execute_project',
+    route_after_execution,
+    {
+        "success": 'capture_screenshots',
+        "retry": 'cleanup_failed_sandbox',
+        "give_up": END,
+    }
+)
+graph.add_edge('cleanup_failed_sandbox', 'code_generator')
+
+# capture_screenshots -> (regression redeploy confirmation -> END |
+#                          first pass -> ui_reviewer |
+#                          subsequent pass -> screenshot_comparator -> regression_guard -> ...)
+graph.add_conditional_edges(
+    'capture_screenshots',
+    route_after_screenshots,
+    {
+        "done": END,
+        "review": 'ui_reviewer',
+        "compare": 'screenshot_comparator',
+    }
+)
+graph.add_edge('screenshot_comparator', 'regression_guard')
+
+# regression_guard -> (regression found -> revert file_code, redeploy it, and re-screenshot
+#                       to confirm the live URL matches | otherwise -> ui_reviewer as before)
+graph.add_conditional_edges(
+    'regression_guard',
+    route_after_regression_guard,
+    {
+        "redeploy_reverted": 'writer',
+        "review": 'ui_reviewer',
+    }
+)
+
+# ui_reviewer -> (meets_bar / no issues / retries exhausted -> END | otherwise -> patch loop)
+graph.add_conditional_edges(
+    'ui_reviewer',
+    route_after_ui_review,
+    {
+        "done": END,
+        "patch": 'patch_planner',
+    }
+)
+graph.add_edge('patch_planner', 'patch_generator')
+graph.add_edge('patch_generator', 'writer')
 
 workflow = graph.compile()
 
