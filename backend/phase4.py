@@ -11,6 +11,7 @@ import base64
 import os
 import re
 import tempfile
+import traceback
 from pydantic import BaseModel, Field
 from phase2_planner import research
 from dotenv import load_dotenv
@@ -1764,73 +1765,164 @@ def route_after_execution(state: State) -> str:
         return "give_up"
     return "retry"
 
+def _capture(page, url, path):
+    """Open page and save screenshot."""
 
-# ---------------------------------------------------------------------------
-# Screenshot node — opens the live sandbox URL and captures desktop / tablet /
-# mobile screenshots. This node only CAPTURES; it does not judge the UI.
-# The ui_reviewer node compares these against the specs and decides whether
-# fixes are needed.
-# ---------------------------------------------------------------------------
-def capture_screenshots(state: State) -> State:
-    result = state.get('execution_result')
- 
-    # Guard: only makes sense to screenshot a successful, live deployment
-    if not result or result.status != "success" or not result.url:
-        print('skipping_screenshots_no_live_url')
-        return {'screenshot_spec': None}
- 
-    url = result.url
-    run_id = str(uuid.uuid4())[:8]
-    out_dir = tempfile.gettempdir()
- 
-    desktop_path = os.path.join(out_dir, f"desktop_{run_id}.png")
-    tablet_path = os.path.join(out_dir, f"tablet_{run_id}.png")
-    mobile_path = os.path.join(out_dir, f"mobile_{run_id}.png")
- 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
- 
-            # --- initial load ---
-            page.goto(url, timeout=30000)
-            page.wait_for_load_state("networkidle", timeout=15000)
-            page.wait_for_timeout(3000)  # let animations/late JS settle
- 
-            # --- desktop ---
-            page.set_viewport_size({"width": 1920, "height": 1080})
+    for attempt in range(5):
+        try:
+            page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=30000,
+            )
+
+            page.wait_for_timeout(2000)
+
+            page.evaluate("""
+            async () => {
+                if (document.fonts)
+                    await document.fonts.ready;
+            }
+            """)
+
+            # Trigger lazy-loaded elements
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(500)
-            page.screenshot(path=desktop_path, full_page=True)
- 
-            # --- tablet ---
-            page.set_viewport_size({"width": 768, "height": 1024})
-            page.reload(timeout=30000)
-            page.wait_for_load_state("networkidle", timeout=15000)
+            page.evaluate("window.scrollTo(0,0)")
+            page.wait_for_timeout(500)
+
+            page.screenshot(
+                path=path,
+                full_page=True
+            )
+
+            return
+
+        except Exception:
+            if attempt == 4:
+                raise
+
             page.wait_for_timeout(2000)
-            page.screenshot(path=tablet_path, full_page=True)
- 
-            # --- mobile ---
-            page.set_viewport_size({"width": 390, "height": 844})
-            page.reload(timeout=30000)
-            page.wait_for_load_state("networkidle", timeout=15000)
-            page.wait_for_timeout(2000)
-            page.screenshot(path=mobile_path, full_page=True)
- 
+
+
+def capture_screenshots(state: State) -> State:
+
+    result = state.get("execution_result")
+
+    if (
+        result is None
+        or result.status != "success"
+        or not result.url
+    ):
+        print("skipping_screenshots_no_live_url")
+        return {
+            "screenshot_spec": None
+        }
+
+    url = result.url
+
+    run_id = uuid.uuid4().hex[:8]
+
+    out_dir = tempfile.gettempdir()
+
+    desktop_path = os.path.join(
+        out_dir,
+        f"desktop_{run_id}.png",
+    )
+
+    tablet_path = os.path.join(
+        out_dir,
+        f"tablet_{run_id}.png",
+    )
+
+    mobile_path = os.path.join(
+        out_dir,
+        f"mobile_{run_id}.png",
+    )
+
+    try:
+
+        with sync_playwright() as p:
+
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+
+            # Desktop
+            desktop = browser.new_page(
+                viewport={
+                    "width": 1920,
+                    "height": 1080,
+                }
+            )
+
+            _capture(
+                desktop,
+                url,
+                desktop_path,
+            )
+
+            desktop.close()
+
+            # Tablet
+            tablet = browser.new_page(
+                viewport={
+                    "width": 768,
+                    "height": 1024,
+                }
+            )
+
+            _capture(
+                tablet,
+                url,
+                tablet_path,
+            )
+
+            tablet.close()
+
+            # Mobile
+            mobile = browser.new_page(
+                viewport={
+                    "width": 390,
+                    "height": 844,
+                }
+            )
+
+            _capture(
+                mobile,
+                url,
+                mobile_path,
+            )
+
+            mobile.close()
+
             browser.close()
- 
-        print('screenshots_captured')
-        return {'screenshot_spec': ScreenshotSpec(
-            desktop=desktop_path,
-            tablet=tablet_path,
-            mobile=mobile_path,
-        )}
- 
+
+        print("screenshots_captured")
+
+        return {
+            "screenshot_spec": ScreenshotSpec(
+                desktop=desktop_path,
+                tablet=tablet_path,
+                mobile=mobile_path,
+            )
+        }
+
     except Exception as e:
-        # Screenshot failure shouldn't crash the whole pipeline — just means
-        # the reviewer runs without visual evidence for this attempt.
-        print(f'screenshot_capture_failed: {e}')
-        return {'screenshot_spec': None}
- 
+
+        print("screenshot_capture_failed")
+        print(traceback.format_exc())
+
+        return {
+            "screenshot_spec": None,
+            "screenshot_error": str(e),
+        }
 # ---------------------------------------------------------------------------
 # UI Reviewer — looks at the live screenshots and checks whether the build
 # actually matches the design system / design direction / UX / component /
