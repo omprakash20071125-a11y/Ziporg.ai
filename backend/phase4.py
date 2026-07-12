@@ -1765,19 +1765,21 @@ def route_after_execution(state: State) -> str:
         print(f"execute_project_gave_up_after_retries: {state['execution_result'].stderr}")
         return "give_up"
     return "retry"
-
 def _capture(page, url, path):
-    """Open page and save screenshot."""
+    """Open page and save screenshot. Retries page.goto/screenshot failures
+    (network hiccups, slow-rendering pages) — NOT browser launch failures,
+    which are handled one level up in capture_screenshots."""
 
     for attempt in range(5):
         try:
             page.goto(
                 url,
-                wait_until="networkidle",
-                timeout=30000,
+                wait_until="domcontentloaded",  # networkidle is unreliable on
+                timeout=30000,                   # pages with animations/polling
             )
 
-            page.wait_for_timeout(2000)
+            page.wait_for_load_state("load")
+            page.wait_for_timeout(2500)
 
             page.evaluate("""
             async () => {
@@ -1794,31 +1796,44 @@ def _capture(page, url, path):
 
             page.screenshot(
                 path=path,
-                full_page=True
+                full_page=True,
+                animations="disabled",
             )
+
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                raise RuntimeError(f"Screenshot file was not written or is empty: {path}")
 
             return
 
         except Exception:
             if attempt == 4:
                 raise
-
             page.wait_for_timeout(2000)
 
 
-# ---------------------------------------------------------------------------
-# MAX_SCREENSHOT_RETRIES: dedicated retry budget just for capture_screenshots.
-#
-# PREVIOUSLY: a Playwright/browser-launch failure here had NO retry path at
-# all — route_after_screenshots routed unconditionally into ui_reviewer,
-# which treated a missing screenshot_spec as "review_result with 0 issues",
-# and route_after_ui_review then silently returned "done" (its
-# `if not review or not review.issues: return "done"` branch), so the whole
-# pipeline finished as if nothing were wrong. That's the exact "retry logic
-# didn't work" symptom — because for THIS failure mode, no retry logic
-# existed in the first place. Fixed below.
-# ---------------------------------------------------------------------------
-MAX_SCREENSHOT_RETRIES = 2
+def _diagnose_playwright_env():
+    """One-time diagnostic dump so a future 'Executable doesn't exist' failure
+    is immediately explainable from the logs instead of requiring a fresh
+    round of guessing. Cheap, so it's fine to run on every attempt."""
+    try:
+        from pathlib import Path
+        import playwright as _pw
+
+        print("=" * 60)
+        print("playwright version:", getattr(_pw, "__version__", "unknown"))
+        print("HOME:", os.environ.get("HOME"))
+        print("PLAYWRIGHT_BROWSERS_PATH:", os.environ.get("PLAYWRIGHT_BROWSERS_PATH"))
+
+        # Playwright's default cache dir if PLAYWRIGHT_BROWSERS_PATH isn't set
+        cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or (Path.home() / ".cache" / "ms-playwright"))
+        print("Expected browser cache dir:", cache)
+        print("Cache dir exists:", cache.exists())
+        if cache.exists():
+            for entry in cache.iterdir():
+                print("  found:", entry)
+        print("=" * 60)
+    except Exception as diag_err:
+        print(f"playwright_diagnostic_failed: {diag_err!r}")
 
 
 def capture_screenshots(state: State) -> State:
@@ -1837,114 +1852,100 @@ def capture_screenshots(state: State) -> State:
         }
 
     url = result.url
-
     run_id = uuid.uuid4().hex[:8]
-
     out_dir = tempfile.gettempdir()
 
-    desktop_path = os.path.join(
-        out_dir,
-        f"desktop_{run_id}.png",
-    )
+    desktop_path = os.path.join(out_dir, f"desktop_{run_id}.png")
+    tablet_path = os.path.join(out_dir, f"tablet_{run_id}.png")
+    mobile_path = os.path.join(out_dir, f"mobile_{run_id}.png")
 
-    tablet_path = os.path.join(
-        out_dir,
-        f"tablet_{run_id}.png",
-    )
+    last_error = None
 
-    mobile_path = os.path.join(
-        out_dir,
-        f"mobile_{run_id}.png",
-    )
+    # FIX: retry the ENTIRE browser launch, not just page.goto(). Previously
+    # a launch failure (missing executable, missing shared libs) had zero
+    # retry path inside this function — it just went straight to `except` and
+    # returned screenshot_spec=None on the first attempt, every time.
+    for launch_attempt in range(3):
+        browser = None
+        try:
+            _diagnose_playwright_env()
 
-    try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                        "--disable-background-networking",
+                        "--disable-extensions",
+                        "--disable-sync",
+                    ],
+                )
 
-        with sync_playwright() as p:
+                try:
+                    context = browser.new_context()
 
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
+                    desktop = context.new_page()
+                    desktop.set_viewport_size({"width": 1920, "height": 1080})
+                    _capture(desktop, url, desktop_path)
+                    desktop.close()
+
+                    tablet = context.new_page()
+                    tablet.set_viewport_size({"width": 768, "height": 1024})
+                    _capture(tablet, url, tablet_path)
+                    tablet.close()
+
+                    mobile = context.new_page()
+                    mobile.set_viewport_size({"width": 390, "height": 844})
+                    _capture(mobile, url, mobile_path)
+                    mobile.close()
+
+                    context.close()
+                finally:
+                    # Always close the browser even if one viewport's capture
+                    # raised partway through — prevents an orphaned browser
+                    # process leaking across retries/requests.
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
+            print("screenshots_captured")
+            return {
+                "screenshot_spec": ScreenshotSpec(
+                    desktop=desktop_path,
+                    tablet=tablet_path,
+                    mobile=mobile_path,
+                ),
+                "screenshot_error": None,
+            }
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"screenshot_capture_failed (launch_attempt={launch_attempt + 1}/3)")
+            print(traceback.format_exc())
+
+            # Non-transient class of error: no browser executable / missing
+            # shared libs will fail identically on every retry within this
+            # same environment. Don't waste attempts — bail immediately.
+            non_transient_markers = (
+                "Executable doesn't exist",
+                "shared libraries",
+                "cannot open shared object file",
             )
+            if any(m in last_error for m in non_transient_markers):
+                print("screenshot_capture_non_transient_env_error — skipping further launch retries")
+                break
 
-            # Desktop
-            desktop = browser.new_page(
-                viewport={
-                    "width": 1920,
-                    "height": 1080,
-                }
-            )
+            time.sleep(2)
 
-            _capture(
-                desktop,
-                url,
-                desktop_path,
-            )
-
-            desktop.close()
-
-            # Tablet
-            tablet = browser.new_page(
-                viewport={
-                    "width": 768,
-                    "height": 1024,
-                }
-            )
-
-            _capture(
-                tablet,
-                url,
-                tablet_path,
-            )
-
-            tablet.close()
-
-            # Mobile
-            mobile = browser.new_page(
-                viewport={
-                    "width": 390,
-                    "height": 844,
-                }
-            )
-
-            _capture(
-                mobile,
-                url,
-                mobile_path,
-            )
-
-            mobile.close()
-
-            browser.close()
-
-        print("screenshots_captured")
-
-        return {
-            "screenshot_spec": ScreenshotSpec(
-                desktop=desktop_path,
-                tablet=tablet_path,
-                mobile=mobile_path,
-            ),
-            # Clear any stale error from a prior failed attempt now that this
-            # attempt succeeded — otherwise a leftover error message from
-            # retry #1 could linger in state and confuse downstream nodes.
-            "screenshot_error": None,
-        }
-
-    except Exception as e:
-
-        print("screenshot_capture_failed")
-        print(traceback.format_exc())
-
-        return {
-            "screenshot_spec": None,
-            "screenshot_error": str(e),
-        }
-
+    return {
+        "screenshot_spec": None,
+        "screenshot_error": last_error,
+    }
 
 def bump_screenshot_retry(state: State) -> State:
     """Increments the dedicated screenshot retry counter and loops back into
