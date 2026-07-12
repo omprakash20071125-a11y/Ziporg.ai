@@ -345,7 +345,7 @@ def generate_download(job_id: str, thread_id: str = "project"):
         filename=f"project_{thread_id}.zip",
         media_type="application/zip",
     )
-    if __name__ == "__main__":
+if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
