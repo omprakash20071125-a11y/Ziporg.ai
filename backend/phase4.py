@@ -703,6 +703,46 @@ def infer_language(filename: str, fallback: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared retry wrapper for structured-output chain.invoke() calls (planner,
+# patch_planner, and any future node using groq_model.with_structured_output).
+#
+# Two structurally different failures both surface as a raw exception out of
+# chain.invoke(), and treating them the same way is wrong:
+#   - RateLimitError (HTTP 429): the account's tokens-per-minute budget is
+#     temporarily exhausted. Retrying instantly just re-hits the same limit —
+#     seen in production logs, where a second attempt with zero delay failed
+#     again immediately. This needs an actual sleep before the next attempt.
+#   - BadRequestError (HTTP 400, tool_use_failed): the model's function-call
+#     arguments didn't match the schema (missing field, invalid enum value,
+#     or — as seen in production — forgetting to wrap the file list in the
+#     required outer object). This is generation variance, not a rate issue;
+#     retrying immediately with a fresh sample is the right move, no sleep
+#     needed.
+# Without this distinction, a 429 right after a 400 (both real production
+# cases) burns through all retry attempts without ever giving the TPM window
+# a chance to free up.
+# ---------------------------------------------------------------------------
+def invoke_structured_with_retry(chain, payload: dict, node_name: str, max_attempts: int = 3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return chain.invoke(payload)
+        except Exception as e:
+            last_err = e
+            err_name = type(e).__name__
+            is_rate_limit = "RateLimit" in err_name or "429" in str(e) or "rate_limit" in str(e).lower()
+            print(f"{node_name}_invoke_failed (attempt {attempt}/{max_attempts}, {err_name}): {e!r}")
+            if attempt == max_attempts:
+                break
+            if is_rate_limit:
+                delay = 15 * attempt  # 15s, 30s, ... - give the TPM window room to reset
+                print(f"{node_name}_rate_limited: sleeping {delay}s before retry")
+                time.sleep(delay)
+            # else: schema/tool-call failure - retry immediately, fresh sample
+    raise last_err
+
+
+# ---------------------------------------------------------------------------
 # Deterministic static-analysis pass over generated code.
 #
 # The vision-model UI reviewer is unreliable for two specific, very common
@@ -1437,29 +1477,16 @@ interaction_summary: {interaction_summary}""",
     # structured-output error, and backfill `language` deterministically from
     # each file's extension if the model still leaves it blank.
     # ------------------------------------------------------------------
-    last_err = None
-    response = None
-    for attempt in range(2):
-        try:
-            response = chain.invoke({
-                'query': state['new_request'],
-                'research_context': state['research_context'],
-                'image_description': state['image_description'],
-                'design_system_summary': state.get('design_system_summary', ''),
-                'design_direction_summary': state.get('design_direction_summary', ''),
-                'ux_summary': state.get('ux_summary', ''),
-                'component_summary': state.get('component_summary', ''),
-                'interaction_summary': state.get('interaction_summary', ''),
-            })
-            break
-        except Exception as e:
-            last_err = e
-            print(f"planner_invoke_failed (attempt {attempt + 1}/2): {e!r}")
-    if response is None:
-        # Both attempts failed — re-raise so the failure is still visible/loud
-        # rather than silently producing an empty plan the rest of the graph
-        # can't do anything useful with.
-        raise last_err
+    response = invoke_structured_with_retry(chain, {
+        'query': state['new_request'],
+        'research_context': state['research_context'],
+        'image_description': state['image_description'],
+        'design_system_summary': state.get('design_system_summary', ''),
+        'design_direction_summary': state.get('design_direction_summary', ''),
+        'ux_summary': state.get('ux_summary', ''),
+        'component_summary': state.get('component_summary', ''),
+        'interaction_summary': state.get('interaction_summary', ''),
+    }, node_name='planner', max_attempts=3)
 
     # ------------------------------------------------------------------
     # FIX: Groq's small model occasionally emits a `fileplan` entry with an
@@ -2375,25 +2402,15 @@ def patch_planner(state: State) -> State:
     ])
     struct_model = groq_model.with_structured_output(PatchPlan)
     chain = prompt | struct_model
-    # FIX: same defensive retry as planner() — a structured-output call to Groq can
-    # still fail its tool-schema validation for reasons other than change_type (now
-    # loosened above), so don't let a single bad generation kill the whole pipeline.
-    last_err = None
-    response = None
-    for attempt in range(2):
-        try:
-            response = chain.invoke({
-                'issues': issues_ctx,
-                'files': files_ctx,
-                'design_system_summary': state.get('design_system_summary', ''),
-                'design_direction_summary': state.get('design_direction_summary', ''),
-            })
-            break
-        except Exception as e:
-            last_err = e
-            print(f"patch_planner_invoke_failed (attempt {attempt + 1}/2): {e!r}")
-    if response is None:
-        raise last_err
+    # FIX: same defensive retry as planner(), now via the shared rate-limit-aware
+    # helper — a structured-output call to Groq can still fail its tool-schema
+    # validation, or simply get rate-limited, and neither should kill the pipeline.
+    response = invoke_structured_with_retry(chain, {
+        'issues': issues_ctx,
+        'files': files_ctx,
+        'design_system_summary': state.get('design_system_summary', ''),
+        'design_direction_summary': state.get('design_direction_summary', ''),
+    }, node_name='patch_planner', max_attempts=3)
     print(f'patch_planner_done patches={len(response.patches)}')
     return {'patch_plan': response}
 
