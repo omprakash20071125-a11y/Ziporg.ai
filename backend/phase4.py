@@ -21,9 +21,9 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
-model = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
-    google_api_key=os.environ.get("GOOGLE_API_KEY"),
+model = ChatOpenRouter(
+    model="google/gemma-4-31b-it:free",
+    temperature=0,
 )
 
 # ---------------------------------------------------------------------------
