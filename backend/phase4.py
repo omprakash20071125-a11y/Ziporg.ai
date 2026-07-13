@@ -1375,7 +1375,7 @@ interaction_summary: {interaction_summary}""",
             'design_direction_summary', 'ux_summary', 'component_summary', 'interaction_summary'
         ]
     )
-    struct_model = model.with_structured_output(all_files)
+    struct_model = coding_model.with_structured_output(all_files)
     chain = prompt | struct_model
     response = chain.invoke({
         'query': state['new_request'],
@@ -1575,7 +1575,7 @@ def code_generator(state: State) -> State:
             'design_system', 'design_direction', 'code', 'previous_error'
         ]
     )
-    chain = prompt | coding_model | StrOutputParser()
+    chain = prompt | model | StrOutputParser()
     for f in ordered_files:
         dep_context = "\n\n".join([
             f"--- {dep} ---\n{code_for_each_file[dep]}"
