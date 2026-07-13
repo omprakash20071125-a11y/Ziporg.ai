@@ -22,8 +22,7 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 load_dotenv()
 
 model = ChatOpenRouter(
-    model="openrouter/free"
-)
+    model="openrouter/free")
 
 # ---------------------------------------------------------------------------
 # Schemas
