@@ -22,8 +22,7 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 load_dotenv()
 
 model = ChatOpenRouter(
-    model="google/gemma-4-31b-it:free",
-    temperature=0,
+    model="openrouter/free"
 )
 
 # ---------------------------------------------------------------------------
