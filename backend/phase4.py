@@ -286,7 +286,15 @@ class PatchItem(BaseModel):
     filename: str = Field(description="Exact filename to modify, must match an existing generated file")
     change_description: str = Field(description="Concrete, specific instruction describing exactly what to change in this file and why")
     related_issue_ids: List[str] = Field(description="issue_id values from the review this change addresses")
-    change_type: Literal["style", "layout", "content", "behavior", "accessibility", "responsive"]
+    # FIX: was Literal["style","layout","content","behavior","accessibility","responsive"].
+    # change_type is only ever used for display (see the f-string in patch_generator),
+    # never branched on in code. As a strict enum it caused Groq to reject the whole
+    # PatchPlan tool call with a 400 the moment the model used any other word (e.g.
+    # "typography") — same failure class as the fileplan.language crash, just a
+    # different field. A plain string can't fail that validation, so it can't take
+    # down the pipeline this way again. The prompt template still suggests the 6
+    # categories for consistency; it's just no longer enforced at the schema level.
+    change_type: str = Field(description="e.g. style, layout, content, behavior, accessibility, responsive")
 
 
 class PatchPlan(BaseModel):
@@ -2367,12 +2375,25 @@ def patch_planner(state: State) -> State:
     ])
     struct_model = groq_model.with_structured_output(PatchPlan)
     chain = prompt | struct_model
-    response = chain.invoke({
-        'issues': issues_ctx,
-        'files': files_ctx,
-        'design_system_summary': state.get('design_system_summary', ''),
-        'design_direction_summary': state.get('design_direction_summary', ''),
-    })
+    # FIX: same defensive retry as planner() — a structured-output call to Groq can
+    # still fail its tool-schema validation for reasons other than change_type (now
+    # loosened above), so don't let a single bad generation kill the whole pipeline.
+    last_err = None
+    response = None
+    for attempt in range(2):
+        try:
+            response = chain.invoke({
+                'issues': issues_ctx,
+                'files': files_ctx,
+                'design_system_summary': state.get('design_system_summary', ''),
+                'design_direction_summary': state.get('design_direction_summary', ''),
+            })
+            break
+        except Exception as e:
+            last_err = e
+            print(f"patch_planner_invoke_failed (attempt {attempt + 1}/2): {e!r}")
+    if response is None:
+        raise last_err
     print(f'patch_planner_done patches={len(response.patches)}')
     return {'patch_plan': response}
 
