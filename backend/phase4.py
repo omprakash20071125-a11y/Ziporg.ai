@@ -2575,11 +2575,25 @@ def screenshot_comparator(state: State) -> State:
     return {'comparison_result': result, 'ui_review_retry_count': retries}
 
 def regression_guard(state: State) -> State:
+    """DISABLED (per user request): previously reverted file_code to the
+    pre-patch snapshot whenever screenshot_comparator judged a patch pass as
+    a regression (improved=False). That was masking the patch loop's real
+    behavior — the user wants to see what the patch loop actually produces
+    across all passes, unreverted, even if a given pass makes things worse,
+    so they can evaluate the pipeline's real output quality instead of a
+    silently rolled-back version.
+
+    Kept as a no-op pass-through node (rather than deleting it from the
+    graph) so comparison_result is still computed and logged for visibility
+    upstream in screenshot_comparator — it's just no longer acted upon here.
+    """
     comp = state.get('comparison_result')
-    pre = state.get('pre_patch_file_code')
-    if comp and not comp.improved and pre:
-        print('regression_detected: reverting file_code to pre-patch snapshot and redeploying')
-        return {'file_code': pre, 'reverted_due_to_regression': True}
+    if comp and not comp.improved:
+        print(
+            f"regression_guard_disabled: comparator flagged this pass as a "
+            f"regression (delta={comp.score_delta}), but auto-revert is OFF — "
+            f"keeping the patched file_code as-is."
+        )
     return {'reverted_due_to_regression': False}
 
 
