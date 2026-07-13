@@ -240,7 +240,7 @@ class fileplan(BaseModel):
         description="Filenames this file imports, links to, or requires (empty list if none)",
     )
     generate_order: int = Field(description="Integer starting from 1. Lower number = generate first.")
-    language: str = Field(description="Language this file should be written in")
+    language: str = Field(default="", description="Language this file should be written in")
     package: str = Field(default="", description="Package needed for this file, if any (empty string if none)")
 
 
@@ -660,6 +660,38 @@ def strip_think_tags(text: str) -> str:
         cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
         cleaned = re.sub(r"```$", "", cleaned.rstrip())
     return cleaned.strip()
+
+
+# ---------------------------------------------------------------------------
+# Helper: infer a file's language from its extension. Used as a safety net
+# when the planner model (langauge is now optional in the fileplan schema —
+# see FIX note on the fileplan class above) omits the `language` field for a
+# file entry. Kept intentionally small/deterministic rather than another LLM
+# call — this only needs to be "good enough" for code_generator's prompt
+# context, not authoritative.
+# ---------------------------------------------------------------------------
+_EXTENSION_LANGUAGE_MAP = {
+    ".html": "HTML", ".htm": "HTML",
+    ".css": "CSS",
+    ".js": "JavaScript", ".mjs": "JavaScript", ".jsx": "JavaScript",
+    ".ts": "TypeScript", ".tsx": "TypeScript",
+    ".py": "Python",
+    ".json": "JSON",
+    ".md": "Markdown",
+    ".sh": "Bash",
+    ".yml": "YAML", ".yaml": "YAML",
+    ".txt": "Text",
+    ".cpp": "C++", ".c": "C", ".h": "C/C++ Header",
+    ".java": "Java",
+    ".go": "Go",
+    ".rb": "Ruby",
+    ".sql": "SQL",
+}
+
+
+def infer_language(filename: str, fallback: str = "") -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    return _EXTENSION_LANGUAGE_MAP.get(ext, fallback or "Text")
 
 
 # ---------------------------------------------------------------------------
@@ -1351,6 +1383,8 @@ RULES:
     produces elsewhere in `files` — never reference a stylesheet/script filename that isn't itself
     a planned file. This is checked mechanically after generation; a mismatch here is an automatic
     build defect.
+16. Every file entry MUST include its `language` field explicitly (e.g. "HTML", "CSS",
+    "JavaScript", "Python") — do not omit it, even when it's obvious from the extension.
 ---
 IMPORTANT BEHAVIOURS:
 - The plan you produce is the only instruction the code generator will receive per file. It never
@@ -1377,16 +1411,48 @@ interaction_summary: {interaction_summary}""",
     )
     struct_model = groq_model.with_structured_output(all_files)
     chain = prompt | struct_model
-    response = chain.invoke({
-        'query': state['new_request'],
-        'research_context': state['research_context'],
-        'image_description': state['image_description'],
-        'design_system_summary': state.get('design_system_summary', ''),
-        'design_direction_summary': state.get('design_direction_summary', ''),
-        'ux_summary': state.get('ux_summary', ''),
-        'component_summary': state.get('component_summary', ''),
-        'interaction_summary': state.get('interaction_summary', ''),
-    })
+    # ------------------------------------------------------------------
+    # FIX: the actual crash from the logs. `fileplan.language` used to have no
+    # default, which made it a REQUIRED property in the JSON schema sent to
+    # Groq as the `all_files` tool definition. Groq validates a model's tool
+    # call arguments against that schema server-side, before LangChain ever
+    # sees the response — so when the planner model omitted `language` for a
+    # file, Groq rejected the whole tool call with a raw 400 Bad Request. That
+    # exception has nothing to do with LangChain's own retry/parsing logic, so
+    # it was propagating straight out of chain.invoke() and killing the entire
+    # graph.invoke() call with no chance for any of the existing defensive
+    # code (empty-filename filter, static_analyzer, etc.) to run.
+    #
+    # `language` is now optional (default="") in the schema, so Groq can no
+    # longer reject a tool call purely for omitting it. As a second line of
+    # defense, wrap the call in a small retry loop for any remaining
+    # structured-output error, and backfill `language` deterministically from
+    # each file's extension if the model still leaves it blank.
+    # ------------------------------------------------------------------
+    last_err = None
+    response = None
+    for attempt in range(2):
+        try:
+            response = chain.invoke({
+                'query': state['new_request'],
+                'research_context': state['research_context'],
+                'image_description': state['image_description'],
+                'design_system_summary': state.get('design_system_summary', ''),
+                'design_direction_summary': state.get('design_direction_summary', ''),
+                'ux_summary': state.get('ux_summary', ''),
+                'component_summary': state.get('component_summary', ''),
+                'interaction_summary': state.get('interaction_summary', ''),
+            })
+            break
+        except Exception as e:
+            last_err = e
+            print(f"planner_invoke_failed (attempt {attempt + 1}/2): {e!r}")
+    if response is None:
+        # Both attempts failed — re-raise so the failure is still visible/loud
+        # rather than silently producing an empty plan the rest of the graph
+        # can't do anything useful with.
+        raise last_err
+
     # ------------------------------------------------------------------
     # FIX: Groq's small model occasionally emits a `fileplan` entry with an
     # empty filename ("" is still valid against `filename: str`, so schema
@@ -1404,6 +1470,17 @@ interaction_summary: {interaction_summary}""",
             f"planner_dropped_invalid_files: "
             f"{len(response.files) - len(valid_files)} entries had an empty/blank filename"
         )
+
+    # FIX (companion to the schema change above): backfill any file whose
+    # `language` came back empty, inferred from its extension, falling back to
+    # the plan's overall `language` field. Keeps code_generator's prompt
+    # context meaningful even when the model skips this field.
+    for f in valid_files:
+        if not f.language or not f.language.strip():
+            inferred = infer_language(f.filename, fallback=response.language)
+            print(f"planner_backfilled_language: {f.filename} -> {inferred}")
+            f.language = inferred
+
     response.files = valid_files
     print('planner_done')
     return {'fileplans': response}
