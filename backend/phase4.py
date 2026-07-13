@@ -21,6 +21,9 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
+# `model` (Gemini) is kept ONLY for nodes that require vision (image input):
+# get_image_schema, ui_reviewer, screenshot_comparator. Groq's llama-3.3-70b-versatile
+# is text-only, so those three nodes cannot be switched without breaking image analysis.
 model = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=os.environ.get("GOOGLE_API_KEY"),
@@ -342,11 +345,7 @@ class State(TypedDict):
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 
-# coding_model: kept on OpenRouter per your requirement, but now env-configurable — see
-# CODING_MODEL_NAME below. openai/gpt-oss-20b:free benchmarks competitively for coding among
-# free options, but it's still a small, free, rate-limited model — see strip_think_tags()
-# and detect_common_bugs() below, and the comments on code_generator/patch_generator, for the
-# practical consequences of that choice.
+# coding_model: kept on OpenRouter for patch_generator only.
 coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free", temperature=0)
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
@@ -757,6 +756,8 @@ def query_optimizer(state: State) -> State:
 
 
 def get_image_schema(state: State) -> State:
+    """VISION REQUIRED — stays on `model` (Gemini). Groq's llama-3.3-70b-versatile
+    is text-only and cannot process the image_url content block below."""
     path = state.get('reference_image_path', '')
     if not path or not os.path.exists(path):
         return {'overall_image_design': None}
@@ -767,7 +768,7 @@ def get_image_schema(state: State) -> State:
         {"type": "text", "text": "Give me the complete detail of this image — every section, component, text, color, and layout detail, following the schema."},
         {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
-    structured_model = groq_model.with_structured_output(PageSpec)
+    structured_model = model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     print('schema_fetched')
     return {'overall_image_design': result}
@@ -897,7 +898,7 @@ exactly this schema:
 - Do not include any text outside the JSON object.""",
         input_variables=['query', 'image_summary', 'research_summary']
     )
-    struct_model = model.with_structured_output(RequirementSpec)
+    struct_model = groq_model.with_structured_output(RequirementSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'query': state['new_request'],
@@ -981,7 +982,7 @@ exactly this schema:
                           'core_features', 'optional_features', 'functional_requirements',
                           'non_functional_requirements', 'constraints', 'research_summary', 'design_summary']
     )
-    struct_model = model.with_structured_output(ProductSpec)
+    struct_model = groq_model.with_structured_output(ProductSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'project_name': req.project_name,
@@ -1063,7 +1064,7 @@ def ux_spec_node(state: State) -> State:
         'core_features', 'optional_features', 'functional_requirements', 'non_functional_requirements',
         'product_category', 'personality', 'emotional_goal', 'query'
     ])
-    struct_model = model.with_structured_output(UXSpec)
+    struct_model = groq_model.with_structured_output(UXSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'project_name': req.project_name,
@@ -1114,10 +1115,9 @@ Error handling UX: {ux.error_handling_ux}"""
 
 
 def component_spec_node(state: State) -> State:
-    """Uses `model` (Gemini) instead of groq_model — matches every other spec
-    node. ComponentSpec is deeply nested (components -> variants -> states), which
-    is exactly where a smaller model's structured-output tool-calling tends to drop
-    or malform fields."""
+    """Now on groq_model. ComponentSpec is deeply nested (components -> variants ->
+    states) — worth monitoring output quality since smaller/faster models can drop
+    or malform fields on deeply nested structured output."""
     ux = state.get('ux_spec')
     ds = state.get('design_system')
     product = state.get('product_specification')
@@ -1129,7 +1129,7 @@ def component_spec_node(state: State) -> State:
         'screens', 'key_elements', 'colors', 'typography', 'spacing_scale', 'border_radius',
         'icon_style', 'personality', 'design_keywords'
     ])
-    struct_model = model.with_structured_output(ComponentSpec)
+    struct_model = groq_model.with_structured_output(ComponentSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'screens': screens,
@@ -1231,7 +1231,7 @@ design_system (established tokens — stay within this palette/type, do not inve
 """,
         input_variables=['query', 'research_context', 'image_description', 'design_system_summary']
     )
-    struct_model = model.with_structured_output(DesignDirection)
+    struct_model = groq_model.with_structured_output(DesignDirection)
     chain = prompt | struct_model
     response = chain.invoke({
         'query': state['new_request'],
@@ -1575,7 +1575,7 @@ def code_generator(state: State) -> State:
             'design_system', 'design_direction', 'code', 'previous_error'
         ]
     )
-    chain = prompt | model | StrOutputParser()
+    chain = prompt | groq_model | StrOutputParser()
     for f in ordered_files:
         dep_context = "\n\n".join([
             f"--- {dep} ---\n{code_for_each_file[dep]}"
@@ -1596,7 +1596,7 @@ def code_generator(state: State) -> State:
             'code': dep_context,
             'previous_error': previous_error_ctx,
         })
-        # Strip any reasoning-trace / stray markdown fence the coding_model might
+        # Strip any reasoning-trace / stray markdown fence the model might
         # emit before the raw code — CODE_GEN_TEMPLATE rule #30 requires the first
         # character of the file to be actual code, and unstripped output would
         # otherwise corrupt the written file.
@@ -2095,6 +2095,8 @@ Return ONLY a valid JSON object matching exactly this schema:
 
 
 def ui_reviewer(state: State) -> State:
+    """VISION REQUIRED — stays on `model` (Gemini) to analyze the desktop/tablet/mobile
+    screenshots. Groq's llama-3.3-70b-versatile cannot process image_url blocks."""
     spec = state.get('screenshot_spec')
     if not spec:
         # This branch is reached ONLY after MAX_SCREENSHOT_RETRIES genuine
@@ -2270,7 +2272,7 @@ def patch_planner(state: State) -> State:
     prompt = PromptTemplate(template=PATCH_PLANNER_TEMPLATE, input_variables=[
         'issues', 'files', 'design_system_summary', 'design_direction_summary'
     ])
-    struct_model = model.with_structured_output(PatchPlan)
+    struct_model = groq_model.with_structured_output(PatchPlan)
     chain = prompt | struct_model
     response = chain.invoke({
         'issues': issues_ctx,
@@ -2330,6 +2332,10 @@ def patch_generator(state: State) -> State:
     pass) into previous_screenshot_spec on every return, and resetting
     screenshot_retry_count to 0 so the fresh capture round gets its full retry budget
     rather than inheriting a partially-used counter from the previous round.
+
+    Still on coding_model (OpenRouter free tier) — lowest-stakes remaining use, but
+    still no timeout wired up. See earlier discussion: worth adding a timeout wrapper
+    here if patch passes start hanging.
     """
     patch_plan = state.get('patch_plan')
     file_code = dict(state.get('file_code', {}))
@@ -2409,6 +2415,8 @@ Return ONLY a valid JSON object matching exactly this schema:
 
 
 def screenshot_comparator(state: State) -> State:
+    """VISION REQUIRED — stays on `model` (Gemini) to compare BEFORE/AFTER screenshots.
+    Groq's llama-3.3-70b-versatile cannot process image_url blocks."""
     prev = state.get('previous_screenshot_spec')
     curr = state.get('screenshot_spec')
     retries = state.get('ui_review_retry_count', 0) + 1
