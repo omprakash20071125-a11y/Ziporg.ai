@@ -1404,9 +1404,18 @@
   const STATUS_URL = (jobId) => API_BASE + "/generate/status/" + jobId;
   const DOWNLOAD_URL = (jobId) => API_BASE + "/generate/download/" + jobId;
 
-  // how often to poll for job status, and how long to give up after
+  // how often to poll for job status
   const POLL_INTERVAL_MS = 3000;
-  const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes safety cap
+  // FIX: this used to be a 10-minute hard cap, which killed the frontend
+  // (showing a fake "failed" state) while the backend job was still happily
+  // running — the pipeline's UI-review/patch loop (up to MAX_UI_REVIEW_RETRIES
+  // passes, each with its own screenshot capture + code-gen + LLM calls) can
+  // legitimately take longer than 10 minutes. This is now a generous outer
+  // safety net only, not a realistic expected duration — we keep polling
+  // /generate/status the whole time and only ever bail if the backend
+  // itself reports "error", or if this absolute ceiling is hit (meaning
+  // something is genuinely stuck, e.g. a crashed background task).
+  const POLL_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes absolute safety net
 
   const MAX_IMAGE_MB = 8;
   let selectedImage = null;
@@ -1582,13 +1591,23 @@
   }
 
   // ------------------------------------------------------------------
-  // generate() — now split into two SHORT awaited calls plus a polling
-  // loop, instead of one single long-lived fetch. Each individual
-  // request (kick off the job / check its status / download the zip)
-  // returns in a second or two, so no proxy or browser timeout ever
-  // gets a chance to kill a multi-minute connection. The overall wait
-  // for the user is the same; only the tool the browser is using to
-  // wait is different (many short awaits instead of one long await).
+  // generate() — split into short awaited calls plus a polling loop,
+  // instead of one single long-lived fetch. Each individual request (kick
+  // off the job / check its status / download the zip) returns in a
+  // second or two, so no proxy or browser timeout ever gets a chance to
+  // kill a multi-minute connection.
+  //
+  // FIX: the polling loop no longer bails after a fixed 10 minutes. It now
+  // keeps polling for as long as the backend reports status "running" —
+  // your pipeline's UI-review/patch loop can legitimately run well past
+  // 10 minutes, and the frontend was declaring a fake "failed" state while
+  // the backend was still actively working (confirmed in Railway logs:
+  // ui_review_done / patch_planner_done events firing well after the old
+  // timeout had already killed the frontend poll). POLL_TIMEOUT_MS is now
+  // only a very generous absolute safety net (60 min) for a genuinely stuck
+  // job, not an expected build duration. The status line also now shows a
+  // live "still working" heartbeat with elapsed time so it never looks
+  // frozen/dead during a long build.
   // ------------------------------------------------------------------
   async function generate() {
     const prompt = promptEl.value.trim();
@@ -1656,14 +1675,18 @@
       const jobId = startData.job_id;
       if (!jobId) throw new Error('No job_id returned by the server.');
 
-      // ---- Step 2: poll status every few seconds (each check is fast) ----
+      // ---- Step 2: poll status every few seconds until done/error ----
+      // (no more premature "taking too long" bail-out while status is
+      // still "running" — see FIX note above the function)
       const deadline = Date.now() + POLL_TIMEOUT_MS;
+      const pollStart = Date.now();
       let jobStatus = 'running';
       let jobDetail = null;
+      let stageAnimationStopped = false;
 
       while (jobStatus === 'running') {
         if (Date.now() > deadline) {
-          throw new Error('Build is taking longer than expected. Please try again.');
+          throw new Error('Build has been running for over an hour — something is likely stuck. Please check the backend logs or try again.');
         }
         await sleep(POLL_INTERVAL_MS);
 
@@ -1674,6 +1697,21 @@
         const statusData = await statusRes.json();
         jobStatus = statusData.status;
         jobDetail = statusData.detail;
+
+        // Once the fake 4-stage animation has run its course, replace it
+        // with an honest "still working" heartbeat so a long UI-review/
+        // patch pass never looks frozen or dead.
+        const elapsedMs = Date.now() - pollStart;
+        if (elapsedMs > 4 * 1400 && jobStatus === 'running') {
+          if (!stageAnimationStopped) {
+            clearInterval(progressTimer);
+            stageAnimationStopped = true;
+          }
+          const elapsedMin = Math.floor(elapsedMs / 60000);
+          statusLine.textContent = elapsedMin > 0
+            ? 'Still working… (' + elapsedMin + ' min elapsed) — complex builds with a review/patch pass can take a while.'
+            : 'Still working… complex builds with a review/patch pass can take a while.';
+        }
       }
 
       if (jobStatus === 'error') {
@@ -1695,6 +1733,7 @@
       stages.forEach((_, i) => setStage(i, 'done'));
       setZipper(100);
       pipelineState.textContent = 'done';
+      statusLine.classList.remove('error');
       statusLine.textContent = 'Build finished. Your project is ready to download.';
 
       downloadBtn.href = url;
