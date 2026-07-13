@@ -21,9 +21,6 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
-# `model` (Gemini) is kept ONLY for nodes that require vision (image input):
-# get_image_schema, ui_reviewer, screenshot_comparator. Groq's llama-3.3-70b-versatile
-# is text-only, so those three nodes cannot be switched without breaking image analysis.
 model = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=os.environ.get("GOOGLE_API_KEY"),
@@ -345,7 +342,11 @@ class State(TypedDict):
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 
-# coding_model: kept on OpenRouter for patch_generator only.
+# coding_model: kept on OpenRouter per your requirement, but now env-configurable — see
+# CODING_MODEL_NAME below. openai/gpt-oss-20b:free benchmarks competitively for coding among
+# free options, but it's still a small, free, rate-limited model — see strip_think_tags()
+# and detect_common_bugs() below, and the comments on code_generator/patch_generator, for the
+# practical consequences of that choice.
 coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free", temperature=0)
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
@@ -756,8 +757,6 @@ def query_optimizer(state: State) -> State:
 
 
 def get_image_schema(state: State) -> State:
-    """VISION REQUIRED — stays on `model` (Gemini). Groq's llama-3.3-70b-versatile
-    is text-only and cannot process the image_url content block below."""
     path = state.get('reference_image_path', '')
     if not path or not os.path.exists(path):
         return {'overall_image_design': None}
@@ -768,7 +767,7 @@ def get_image_schema(state: State) -> State:
         {"type": "text", "text": "Give me the complete detail of this image — every section, component, text, color, and layout detail, following the schema."},
         {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
-    structured_model = model.with_structured_output(PageSpec)
+    structured_model = groq_model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     print('schema_fetched')
     return {'overall_image_design': result}
@@ -1115,9 +1114,10 @@ Error handling UX: {ux.error_handling_ux}"""
 
 
 def component_spec_node(state: State) -> State:
-    """Now on groq_model. ComponentSpec is deeply nested (components -> variants ->
-    states) — worth monitoring output quality since smaller/faster models can drop
-    or malform fields on deeply nested structured output."""
+    """Uses `model` (Gemini) instead of groq_model — matches every other spec
+    node. ComponentSpec is deeply nested (components -> variants -> states), which
+    is exactly where a smaller model's structured-output tool-calling tends to drop
+    or malform fields."""
     ux = state.get('ux_spec')
     ds = state.get('design_system')
     product = state.get('product_specification')
@@ -1575,7 +1575,7 @@ def code_generator(state: State) -> State:
             'design_system', 'design_direction', 'code', 'previous_error'
         ]
     )
-    chain = prompt | groq_model | StrOutputParser()
+    chain = prompt | coding_model | StrOutputParser()
     for f in ordered_files:
         dep_context = "\n\n".join([
             f"--- {dep} ---\n{code_for_each_file[dep]}"
@@ -1596,7 +1596,7 @@ def code_generator(state: State) -> State:
             'code': dep_context,
             'previous_error': previous_error_ctx,
         })
-        # Strip any reasoning-trace / stray markdown fence the model might
+        # Strip any reasoning-trace / stray markdown fence the coding_model might
         # emit before the raw code — CODE_GEN_TEMPLATE rule #30 requires the first
         # character of the file to be actual code, and unstripped output would
         # otherwise corrupt the written file.
@@ -1672,12 +1672,7 @@ def wait_for_ready(sandbox, timeout=30):
 
 
 def _fail(stack: str, sandbox_id: str | None, stderr: str) -> dict:
-    """Every execute_project failure path now goes through here so the reason
-    is ALWAYS printed to stdout (visible in Railway logs). Previously only the
-    success path printed anything — every failure was silent, so repeated failed
-    retries gave zero diagnostic information, which is exactly what showed up in
-    production (3 failed attempts, no clue why in the logs). sandbox_id may be
-    None if the sandbox was never successfully created."""
+   
     print(f"execute_project_failed [{stack}]: {stderr}")
     return {'execution_result': ExecutionResult(
         status="failed", url=None, sandbox_id=sandbox_id,
@@ -1689,12 +1684,6 @@ def execute_project(state: State) -> State:
     file_code = state['file_code']
     stack = detect_stack(file_code)
 
-    # FIX: Sandbox.create() was previously OUTSIDE the try block. If it raised
-    # (E2B API error, rate limit, transient network failure), the exception
-    # propagated straight out of this node and crashed the entire LangGraph
-    # run instead of being caught and routed through route_after_execution's
-    # normal retry/give-up logic. Now it's wrapped and routed through _fail
-    # just like every other failure mode here.
     try:
         sandbox = Sandbox.create(timeout=1200)  # 20 min — survives the review/patch loop later
     except Exception as e:
@@ -2024,13 +2013,7 @@ def route_after_capture_screenshots(state: State) -> str:
     if state.get('previous_screenshot_spec'):
         return "compare"
     return "review"
-
-
-# ---------------------------------------------------------------------------
-# UI Reviewer — looks at the live screenshots and checks whether the build
-# actually matches the design system / design direction / UX / component /
-# interaction specs. Produces a quality score + a concrete issue list.
-# ---------------------------------------------------------------------------
+    
 def _encode_image(path: str) -> str | None:
     if not path or not os.path.exists(path):
         return None
@@ -2095,8 +2078,6 @@ Return ONLY a valid JSON object matching exactly this schema:
 
 
 def ui_reviewer(state: State) -> State:
-    """VISION REQUIRED — stays on `model` (Gemini) to analyze the desktop/tablet/mobile
-    screenshots. Groq's llama-3.3-70b-versatile cannot process image_url blocks."""
     spec = state.get('screenshot_spec')
     if not spec:
         # This branch is reached ONLY after MAX_SCREENSHOT_RETRIES genuine
@@ -2140,14 +2121,9 @@ def ui_reviewer(state: State) -> State:
             content.append({"type": "text", "text": f"--- {label} screenshot ---"})
             content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
     message = HumanMessage(content=content)
-    structured_model = model.with_structured_output(UIReviewResult)
+    structured_model = groq_model.with_structured_output(UIReviewResult)
     result = structured_model.invoke([message])
 
-    # Merge deterministic static_analyzer findings in as forced critical issues.
-    # The vision model can miss a literal "undefined" string or a broken stylesheet
-    # link if it doesn't render obviously enough in a screenshot — these findings
-    # were confirmed by direct inspection of the generated source, so they cannot be
-    # argued away by meets_bar being otherwise high.
     static_findings = state.get('static_check_findings') or []
     if static_findings:
         forced_issues = [
@@ -2332,10 +2308,6 @@ def patch_generator(state: State) -> State:
     pass) into previous_screenshot_spec on every return, and resetting
     screenshot_retry_count to 0 so the fresh capture round gets its full retry budget
     rather than inheriting a partially-used counter from the previous round.
-
-    Still on coding_model (OpenRouter free tier) — lowest-stakes remaining use, but
-    still no timeout wired up. See earlier discussion: worth adding a timeout wrapper
-    here if patch passes start hanging.
     """
     patch_plan = state.get('patch_plan')
     file_code = dict(state.get('file_code', {}))
@@ -2383,11 +2355,6 @@ def patch_generator(state: State) -> State:
         'screenshot_retry_count': 0,
     }
 
-
-# ---------------------------------------------------------------------------
-# Screenshot Comparator — compares BEFORE/AFTER screenshots to judge whether
-# the patch pass produced a genuine visual improvement.
-# ---------------------------------------------------------------------------
 COMPARATOR_INSTRUCTIONS = """You are comparing BEFORE and AFTER screenshots of the same website after
 a patch pass intended to fix specific issues. Judge honestly whether the AFTER screenshots are a real
 improvement, a regression, or unchanged.
@@ -2415,8 +2382,6 @@ Return ONLY a valid JSON object matching exactly this schema:
 
 
 def screenshot_comparator(state: State) -> State:
-    """VISION REQUIRED — stays on `model` (Gemini) to compare BEFORE/AFTER screenshots.
-    Groq's llama-3.3-70b-versatile cannot process image_url blocks."""
     prev = state.get('previous_screenshot_spec')
     curr = state.get('screenshot_spec')
     retries = state.get('ui_review_retry_count', 0) + 1
@@ -2446,10 +2411,6 @@ def screenshot_comparator(state: State) -> State:
     message = HumanMessage(content=content)
     struct_model = model.with_structured_output(ComparisonResult)
     result = struct_model.invoke([message])
-
-    # A patch pass that fixed a deterministic static-analyzer finding (broken link,
-    # literal undefined text) is checked mechanically too — don't rely on the vision
-    # model alone to notice a fixed/still-broken asset reference.
     remaining_static = state.get('static_check_findings') or []
     if remaining_static:
         result.improved = False
@@ -2458,19 +2419,6 @@ def screenshot_comparator(state: State) -> State:
     print(f'comparator_done improved={result.improved} delta={result.score_delta} retry#{retries}')
     return {'comparison_result': result, 'ui_review_retry_count': retries}
 
-
-# ---------------------------------------------------------------------------
-# regression_guard.
-#
-# screenshot_comparator computes comparison_result (improved / score_delta /
-# regressions). If it found a regression, this node reverts file_code to the
-# pre-patch snapshot.
-#
-# Redeploys through static_analyzer -> execute_project -> capture_screenshots
-# again so the live sandbox URL and the returned file_code always agree, then
-# route_after_capture_screenshots sends that confirmation pass straight to
-# END instead of re-entering review.
-# ---------------------------------------------------------------------------
 def regression_guard(state: State) -> State:
     comp = state.get('comparison_result')
     pre = state.get('pre_patch_file_code')
@@ -2485,13 +2433,7 @@ def route_after_regression_guard(state: State) -> str:
         return "redeploy_reverted"
     return "review"
 
-
 MAX_UI_REVIEW_RETRIES = 3
-
-
-# ---------------------------------------------------------------------------
-# Graph wiring
-# ---------------------------------------------------------------------------
 graph = StateGraph(State)
 graph.add_node('query_optimizer', query_optimizer)
 graph.add_node('planner', planner)
@@ -2528,7 +2470,6 @@ graph.add_edge('query_optimizer', 'call_researchor_or_not')
 graph.add_edge('query_optimizer', 'get_image_schema')
 graph.add_edge('get_image_schema', 'format_design_schema')
 graph.add_edge('call_researchor_or_not', 'checker')
-# requirements waits on both branches so image_description/research_context always exist first
 graph.add_edge('format_design_schema', 'requirements')
 graph.add_edge('checker', 'requirements')
 graph.add_edge('requirements', 'product_spec')
@@ -2544,9 +2485,6 @@ graph.add_edge('format_interaction_spec', 'design_direction')
 graph.add_edge('design_direction', 'format_design_direction')
 graph.add_edge('format_design_direction', 'planner')
 graph.add_edge('planner', 'code_generator')
-# run the deterministic static_analyzer immediately after every code-generation
-# pass (fresh generation AND every patch pass, since both feed into writer through
-# this same node) so its findings are already in state before ui_reviewer runs.
 graph.add_edge('code_generator', 'static_analyzer')
 graph.add_edge('static_analyzer', 'execute_project')
 graph.add_conditional_edges(
@@ -2559,9 +2497,6 @@ graph.add_conditional_edges(
     }
 )
 graph.add_edge('cleanup_failed_sandbox', 'code_generator')
-# capture_screenshots routes through route_after_capture_screenshots, which
-# retries the screenshot step itself (up to MAX_SCREENSHOT_RETRIES) on
-# failure before ever reaching ui_reviewer.
 graph.add_conditional_edges(
     'capture_screenshots',
     route_after_capture_screenshots,
