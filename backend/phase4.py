@@ -1387,6 +1387,24 @@ interaction_summary: {interaction_summary}""",
         'component_summary': state.get('component_summary', ''),
         'interaction_summary': state.get('interaction_summary', ''),
     })
+    # ------------------------------------------------------------------
+    # FIX: Groq's small model occasionally emits a `fileplan` entry with an
+    # empty filename ("" is still valid against `filename: str`, so schema
+    # validation doesn't catch it — it's garbage data, not a schema error).
+    # Downstream, execute_project() writes to f"/home/user/project/{filename}",
+    # so an empty filename resolves to "/home/user/project/" — a directory
+    # path, not a file. e2b correctly rejects that with a 400
+    # ("path is a directory"), which crashes the whole sandbox run and, after
+    # retries are exhausted, also corrupts the zip-writing step in main.py.
+    # Filter invalid entries out here, at the source, so they never propagate.
+    # ------------------------------------------------------------------
+    valid_files = [f for f in response.files if f.filename and f.filename.strip()]
+    if len(valid_files) != len(response.files):
+        print(
+            f"planner_dropped_invalid_files: "
+            f"{len(response.files) - len(valid_files)} entries had an empty/blank filename"
+        )
+    response.files = valid_files
     print('planner_done')
     return {'fileplans': response}
 
@@ -1577,6 +1595,15 @@ def code_generator(state: State) -> State:
     )
     chain = prompt | coding_model | StrOutputParser()
     for f in ordered_files:
+        # ------------------------------------------------------------------
+        # FIX: second line of defense against empty-filename plan entries.
+        # planner() now filters these at the source, but this guard stays in
+        # place in case `fileplans` is ever populated by a different code path
+        # that doesn't go through planner()'s filter.
+        # ------------------------------------------------------------------
+        if not f.filename or not f.filename.strip():
+            print(f"code_generator_skipping_invalid_entry: empty filename (purpose={f.purpose!r})")
+            continue
         dep_context = "\n\n".join([
             f"--- {dep} ---\n{code_for_each_file[dep]}"
             for dep in f.depends_on
@@ -1692,6 +1719,19 @@ def execute_project(state: State) -> State:
 
     try:
         for filename, content in file_code.items():
+            # ------------------------------------------------------------------
+            # FIX: third line of defense — never let an empty/blank filename
+            # reach e2b's file-write API. Writing to "/home/user/project/" (no
+            # filename appended) is a directory path, not a file, and e2b
+            # correctly rejects it with a 400
+            # InvalidArgumentException("path is a directory: ..."), which was
+            # crashing execute_project outright and — after retries were
+            # exhausted — also crashing the downstream zip-writing step in
+            # main.py with IsADirectoryError.
+            # ------------------------------------------------------------------
+            if not filename or not filename.strip():
+                print("execute_project_skipping_invalid_file: empty filename")
+                continue
             sandbox.files.write(f"/home/user/project/{filename}", content)
 
         if stack == "static" and "index.html" not in file_code:
