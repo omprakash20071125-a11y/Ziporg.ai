@@ -2121,7 +2121,7 @@ def ui_reviewer(state: State) -> State:
             content.append({"type": "text", "text": f"--- {label} screenshot ---"})
             content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
     message = HumanMessage(content=content)
-    structured_model = groq_model.with_structured_output(UIReviewResult)
+    structured_model = model.with_structured_output(UIReviewResult)
     result = structured_model.invoke([message])
 
     static_findings = state.get('static_check_findings') or []
