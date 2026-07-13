@@ -767,7 +767,7 @@ def get_image_schema(state: State) -> State:
         {"type": "text", "text": "Give me the complete detail of this image — every section, component, text, color, and layout detail, following the schema."},
         {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
     ])
-    structured_model = model.with_structured_output(PageSpec)
+    structured_model = groq_model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     print('schema_fetched')
     return {'overall_image_design': result}
@@ -1009,7 +1009,7 @@ def design_system(state: State) -> State:
         'non_functional_requirements', 'constraints', 'product_category', 'personality',
         'tone', 'emotional_goal', 'design_keywords', 'differentiation', 'branding_summary'
     ])
-    struct_model = model.with_structured_output(DesignSystemSpec)
+    struct_model = groq_model.with_structured_output(DesignSystemSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'project_name': req.project_name,
@@ -1177,7 +1177,7 @@ def interaction_spec_node(state: State) -> State:
         'components', 'user_flows', 'error_handling_ux', 'empty_states', 'animation_style',
         'personality', 'emotional_goal'
     ])
-    struct_model = model.with_structured_output(InteractionSpec)
+    struct_model = groq_model.with_structured_output(InteractionSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'components': components,
@@ -1375,7 +1375,7 @@ interaction_summary: {interaction_summary}""",
             'design_direction_summary', 'ux_summary', 'component_summary', 'interaction_summary'
         ]
     )
-    struct_model = coding_model.with_structured_output(all_files)
+    struct_model = groq_model.with_structured_output(all_files)
     chain = prompt | struct_model
     response = chain.invoke({
         'query': state['new_request'],
