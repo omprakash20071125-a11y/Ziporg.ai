@@ -2326,7 +2326,7 @@ def route_after_ui_review(state: State) -> str:
 
     if review and review.meets_bar:
         return "done"
-    if retries >= MAX_UI_REVIEW_RETRIES:
+    if retries >= 7:
         return "done"
     if not review or not review.issues:
         return "done"
