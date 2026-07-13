@@ -44,26 +44,35 @@ joblib==1.5.3
 jsonpatch==1.33
 jsonpath-python==1.1.6
 jsonpointer==3.1.1
-langchain==1.3.11
-langchain-cerebras==0.6.0
-langchain-classic==1.0.8
-langchain-cohere==0.6.0
-langchain-community==0.4.2
-langchain-core==0.3.86
-langchain-firecrawl==0.1.0
-langchain-google-genai==4.2.6
-langchain-groq==1.1.3
-langchain-huggingface==1.2.2
-langchain-openai==0.3.35
-langchain-openrouter==0.2.6
-langchain-protocol==0.0.18
-langchain-tavily==0.2.18
-langchain-text-splitters==1.1.2
-langgraph==1.2.6
-langgraph-checkpoint==4.1.1
-langgraph-prebuilt==1.1.0
-langgraph-sdk==0.4.2
-langsmith==0.9.3
+
+# --- LangChain / LangGraph ecosystem ---
+# These packages are tightly interdependent (langchain, langchain-core, and every
+# langchain-<provider> package must agree on a compatible langchain-core range).
+# langchain==1.3.11 requires langchain-core>=1.4.7,<2.0.0 -- the old ==0.3.86 pin
+# is what caused the ResolutionImpossible error. Ranges below let pip's resolver
+# pick a mutually-compatible set instead of guessing exact versions by hand.
+langchain>=1.3.11,<1.4.0
+langchain-cerebras>=0.6.0,<0.7.0
+langchain-classic>=1.0.8,<1.1.0
+langchain-cohere>=0.6.0,<0.7.0
+langchain-community>=0.4.2,<0.5.0
+langchain-core>=1.4.7,<2.0.0
+langchain-firecrawl>=0.1.0,<0.2.0
+langchain-google-genai>=4.2.6,<5.0.0
+langchain-groq>=1.1.3,<1.2.0
+langchain-huggingface>=1.2.2,<1.3.0
+langchain-openai>=0.3.35,<0.4.0
+langchain-openrouter>=0.2.6,<0.3.0
+langchain-protocol>=0.0.18,<0.1.0
+langchain-tavily>=0.2.18,<0.3.0
+langchain-text-splitters>=1.1.2,<2.0.0
+langgraph>=1.2.6,<1.3.0
+langgraph-checkpoint>=4.1.1,<5.0.0
+langgraph-prebuilt>=1.1.0,<1.2.0
+langgraph-sdk>=0.4.2,<0.5.0
+langsmith>=0.9.3,<1.0.0
+# --- end LangChain / LangGraph ecosystem ---
+
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
