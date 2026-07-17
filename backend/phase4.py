@@ -283,14 +283,6 @@ class PatchItem(BaseModel):
     filename: str = Field(description="Exact filename to modify, must match an existing generated file")
     change_description: str = Field(description="Concrete, specific instruction describing exactly what to change in this file and why")
     related_issue_ids: List[str] = Field(description="issue_id values from the review this change addresses")
-    # FIX: was Literal["style","layout","content","behavior","accessibility","responsive"].
-    # change_type is only ever used for display (see the f-string in patch_generator),
-    # never branched on in code. As a strict enum it caused Groq to reject the whole
-    # PatchPlan tool call with a 400 the moment the model used any other word (e.g.
-    # "typography") — same failure class as the fileplan.language crash, just a
-    # different field. A plain string can't fail that validation, so it can't take
-    # down the pipeline this way again. The prompt template still suggests the 6
-    # categories for consistency; it's just no longer enforced at the schema level.
     change_type: str = Field(description="e.g. style, layout, content, behavior, accessibility, responsive")
 
 
@@ -392,7 +384,9 @@ INSTRUCTIONS
      (and secondary text color if the product needs hierarchy), and a semantic state color
      (success, error, or warning — whichever is relevant to core_features).
    - Every color must have a clear, specific usage — not "general use." E.g. "primary CTA
-     buttons and active nav state," not "accent color."
+     buttons and active nav state," not "accent color." Usage strings for text colors should
+     literally contain the word "text", and usage strings for background colors should contain
+     "background" or "surface" or "page" — this is used downstream for automated contrast checks.
    - Avoid the three most common AI-default palettes unless target_users/product_category
      explicitly calls for one: (a) cream background + terracotta/rust accent, (b) near-black +
      single neon accent, (c) generic blue-and-white SaaS palette. Justify your palette choice
@@ -406,7 +400,9 @@ INSTRUCTIONS
    - Font choices must reflect tone and copy_voice implied by personality — a playful consumer
      app and an enterprise B2B tool should never converge on the same type pairing by default.
    - Use real, specific font names (Google Fonts or system-safe stacks), never "a modern
-     sans-serif."
+     sans-serif." If you choose a Google Font, it MUST actually be loaded via a <link> or
+     @import in the generated files downstream — this is checked automatically, so only choose
+     a webfont you intend to be genuinely loaded, not just named.
    - size should be a concrete value (rem or px), not relative ("large"). weight should be a
      real numeric or named weight (e.g. "600" or "semibold"), not "bold-ish."
 3. SPACING SCALE
@@ -451,6 +447,9 @@ CONSISTENCY RULES
   each other.
 - Do not include layout, page structure, component composition, or any HTML/CSS. Tokens only.
 - Do not invent tokens beyond what the schema asks for.
+- Ensure at least one text/background color pair achieves a WCAG AA contrast ratio of 4.5:1 or
+  higher — this is verified automatically downstream, and a failing pair will be flagged as a
+  defect and sent back for patching.
 ---
 OUTPUT FORMAT
 Return ONLY a valid JSON object (no markdown fences, no commentary) matching exactly this schema:
@@ -669,8 +668,8 @@ def strip_think_tags(text: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Helper: infer a file's language from its extension. Used as a safety net
-# when the planner model (langauge is now optional in the fileplan schema —
-# see FIX note on the fileplan class above) omits the `language` field for a
+# when the planner model (language is optional in the fileplan schema — see
+# FIX note on the fileplan class above) omits the `language` field for a
 # file entry. Kept intentionally small/deterministic rather than another LLM
 # call — this only needs to be "good enough" for code_generator's prompt
 # context, not authoritative.
@@ -702,22 +701,6 @@ def infer_language(filename: str, fallback: str = "") -> str:
 # ---------------------------------------------------------------------------
 # Shared retry wrapper for structured-output chain.invoke() calls (planner,
 # patch_planner, and any future node using groq_model.with_structured_output).
-#
-# Two structurally different failures both surface as a raw exception out of
-# chain.invoke(), and treating them the same way is wrong:
-#   - RateLimitError (HTTP 429): the account's tokens-per-minute budget is
-#     temporarily exhausted. Retrying instantly just re-hits the same limit —
-#     seen in production logs, where a second attempt with zero delay failed
-#     again immediately. This needs an actual sleep before the next attempt.
-#   - BadRequestError (HTTP 400, tool_use_failed): the model's function-call
-#     arguments didn't match the schema (missing field, invalid enum value,
-#     or — as seen in production — forgetting to wrap the file list in the
-#     required outer object). This is generation variance, not a rate issue;
-#     retrying immediately with a fresh sample is the right move, no sleep
-#     needed.
-# Without this distinction, a 429 right after a 400 (both real production
-# cases) burns through all retry attempts without ever giving the TPM window
-# a chance to free up.
 # ---------------------------------------------------------------------------
 def invoke_structured_with_retry(chain, payload: dict, node_name: str, max_attempts: int = 3):
     last_err = None
@@ -742,16 +725,13 @@ def invoke_structured_with_retry(chain, payload: dict, node_name: str, max_attem
 # ---------------------------------------------------------------------------
 # Deterministic static-analysis pass over generated code.
 #
-# The vision-model UI reviewer is unreliable for two specific, very common
-# failure modes: (a) literal "undefined"/"null"/"NaN" text rendered on screen
-# from a data-binding mismatch, and (b) a <link>/<script> tag in HTML pointing
-# at a filename that was never actually generated (so the stylesheet/script
-# silently 404s and the page falls back to unstyled browser defaults). Both
-# are 100% mechanically detectable from the file_code dict itself — no vision
-# call needed, no chance of the model missing it. Findings from this pass are
-# force-injected as synthetic critical issues in ui_reviewer, so the patch
-# loop cannot ship past them even if the vision reviewer's assessment is
-# generous.
+# The vision-model UI reviewer is unreliable for several specific, very common
+# failure modes. Everything in this section is 100% mechanically detectable
+# from the file_code dict (and, where noted, the design_system object) — no
+# vision call needed, no chance of the model missing it. Findings are
+# force-injected as synthetic critical/major issues in ui_reviewer, so the
+# patch loop cannot ship past them even if the vision reviewer's assessment
+# is generous.
 # ---------------------------------------------------------------------------
 _LINK_HREF_RE = re.compile(r'<link[^>]+href=["\']([^"\']+)["\']', re.IGNORECASE)
 _SCRIPT_SRC_RE = re.compile(r'<script[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
@@ -760,6 +740,10 @@ _LITERAL_BUG_PATTERNS = [
     "${undefined}", "${null}", "${NaN}",
     "'undefined'undefined", "undefinedundefined",
 ]
+_IMG_TAG_RE = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
+_ANCHOR_TAG_RE = re.compile(r'<a\b[^>]*>', re.IGNORECASE)
+_HREF_VALUE_RE = re.compile(r'href\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
+_VIEWPORT_META_RE = re.compile(r'<meta[^>]+name=["\']viewport["\']', re.IGNORECASE)
 
 
 def _is_external_ref(ref: str) -> bool:
@@ -788,6 +772,33 @@ def detect_common_bugs(file_code: dict[str, str]) -> List[str]:
                         f"{fname}: <script src=\"{src}\"> does not match any generated file — "
                         f"this script will fail to load and any JS-driven behavior will be broken."
                     )
+
+            # NEW: missing alt text on <img> tags — accessibility defect, mechanically detectable.
+            for img_tag in _IMG_TAG_RE.findall(content):
+                if "alt=" not in img_tag.lower():
+                    findings.append(
+                        f"{fname}: an <img> tag is missing an alt attribute — "
+                        f"screen readers cannot describe it, and it fails basic accessibility requirements. "
+                        f"Tag: {img_tag[:80]}"
+                    )
+
+            # NEW: dead/empty links — href="" or href="#" with no real destination.
+            for a_tag in _ANCHOR_TAG_RE.findall(content):
+                m = _HREF_VALUE_RE.search(a_tag)
+                if m and m.group(1).strip() in ("", "#"):
+                    findings.append(
+                        f"{fname}: an <a> tag has an empty/placeholder href (\"{m.group(1)}\") — "
+                        f"this is a dead link. Tag: {a_tag[:80]}"
+                    )
+
+            # NEW: missing responsive viewport meta tag — silently breaks the mobile
+            # responsive_behavior the ux_spec/design pipeline explicitly required.
+            if "<head" in content.lower() and not _VIEWPORT_META_RE.search(content):
+                findings.append(
+                    f"{fname}: no <meta name=\"viewport\"> tag found — mobile responsive layout "
+                    f"will not render at the correct scale on real devices."
+                )
+
         if ext in (".html", ".htm", ".js", ".mjs", ".jsx", ".ts", ".tsx"):
             for bad in _LITERAL_BUG_PATTERNS:
                 if bad in content:
@@ -798,11 +809,252 @@ def detect_common_bugs(file_code: dict[str, str]) -> List[str]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# NEW: WCAG contrast-ratio check, computed directly from design_system.colors
+# hex values — no vision call, no ambiguity. Pairs a color whose `usage`
+# mentions "text" against every color whose `usage` mentions "background" /
+# "surface" / "page", and flags any pair below the WCAG AA 4.5:1 threshold
+# for normal text. This is a heuristic pairing (usage strings aren't
+# structured data), but it's far more reliable than asking a vision model to
+# eyeball contrast from a screenshot.
+# ---------------------------------------------------------------------------
+def _hex_to_rgb(hex_value: str) -> tuple[int, int, int] | None:
+    h = hex_value.strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) != 6:
+        return None
+    try:
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return None
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(hex1: str, hex2: str) -> float | None:
+    rgb1, rgb2 = _hex_to_rgb(hex1), _hex_to_rgb(hex2)
+    if rgb1 is None or rgb2 is None:
+        return None
+    l1, l2 = _relative_luminance(rgb1), _relative_luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def check_color_contrast(colors: List["ColorToken"]) -> List[str]:
+    if not colors:
+        return []
+    text_colors = [c for c in colors if "text" in c.usage.lower()]
+    bg_colors = [c for c in colors if any(k in c.usage.lower() for k in ("background", "surface", "page"))]
+    if not text_colors or not bg_colors:
+        return []  # can't pair reliably — don't guess, just skip
+    findings: List[str] = []
+    for t in text_colors:
+        for b in bg_colors:
+            ratio = _contrast_ratio(t.value, b.value)
+            if ratio is None:
+                continue
+            if ratio < 4.5:
+                findings.append(
+                    f"Low contrast: text color '{t.name}' ({t.value}) on background '{b.name}' "
+                    f"({b.value}) has a contrast ratio of {ratio:.2f}:1 — WCAG AA requires at "
+                    f"least 4.5:1 for normal body text. This pairing will be hard or impossible "
+                    f"to read for many users."
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW: verify any Google Font actually named in design_system.typography is
+# actually loaded somewhere in the generated files (via a Google Fonts
+# <link>, an @import, or an @font-face). Prevents the common failure where
+# the design system prescribes "Playfair Display" but the HTML never loads
+# it, so the browser silently falls back to a system serif and nobody
+# notices from the screenshots alone.
+# ---------------------------------------------------------------------------
+_SYSTEM_FONT_MARKERS = {
+    "arial", "helvetica", "system-ui", "sans-serif", "serif", "monospace",
+    "-apple-system", "segoe ui", "ui-sans-serif", "ui-serif", "ui-monospace",
+    "times new roman", "courier new", "verdana", "tahoma", "georgia",
+}
+
+
+def _looks_like_system_font(font_name: str) -> bool:
+    return font_name.strip().lower() in _SYSTEM_FONT_MARKERS
+
+
+def check_font_loading(design_system: "DesignSystemSpec | None", file_code: dict[str, str]) -> List[str]:
+    if not design_system or not design_system.typography:
+        return []
+    combined = "\n".join(file_code.values()).lower()
+    findings: List[str] = []
+    seen: set[str] = set()
+    for t in design_system.typography:
+        primary_font = t.font.split(",")[0].strip().strip("'\"")
+        if not primary_font or primary_font.lower() in seen or _looks_like_system_font(primary_font):
+            continue
+        seen.add(primary_font.lower())
+        variants = {
+            primary_font.lower(),
+            primary_font.lower().replace(" ", "+"),
+            primary_font.lower().replace(" ", "-"),
+        }
+        if not any(v in combined for v in variants):
+            findings.append(
+                f"design_system typography role '{t.role}' specifies font '{primary_font}', but no "
+                f"matching Google Fonts <link>, @import, or @font-face was found in any generated "
+                f"file — the page will silently fall back to a default system font instead."
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW: verify CSS custom properties defined in :root are actually being
+# referenced elsewhere, rather than the same hex value being hardcoded
+# repeatedly. Catches the common case where a tokens file/section is
+# generated correctly but other files/sections ignore it and hardcode raw
+# values, defeating the whole point of the design_system's token discipline.
+# ---------------------------------------------------------------------------
+_ROOT_VAR_RE = re.compile(r'--([\w-]+)\s*:\s*(#[0-9a-fA-F]{3,8})')
+_HEX_COLOR_RE = re.compile(r'#[0-9a-fA-F]{3,8}\b')
+
+
+def check_css_variable_usage(file_code: dict[str, str]) -> List[str]:
+    css_like = {fn: c for fn, c in file_code.items() if fn.endswith((".css", ".html", ".htm"))}
+    if not css_like:
+        return []
+    var_map: dict[str, str] = {}
+    for content in css_like.values():
+        for var_name, hex_value in _ROOT_VAR_RE.findall(content):
+            var_map[hex_value.lower()] = var_name
+    if not var_map:
+        return []
+    findings: List[str] = []
+    for fname, content in file_code.items():
+        if not fname.endswith((".css", ".html", ".htm")):
+            continue
+        counts: dict[str, int] = {}
+        for match in _HEX_COLOR_RE.findall(content):
+            val = match.lower()
+            if val in var_map:
+                counts[val] = counts.get(val, 0) + 1
+        for val, count in counts.items():
+            # A single occurrence is likely the :root declaration itself; 3+ raw
+            # repeats elsewhere means the token is being bypassed, not reused.
+            if count >= 3:
+                findings.append(
+                    f"{fname}: raw color value {val} (matches design token --{var_map[val]}) is "
+                    f"hardcoded {count} times instead of using var(--{var_map[val]}) — this "
+                    f"defeats the design system's token consistency and makes future theme "
+                    f"changes error-prone."
+                )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW: lightweight, dependency-free syntax validation for HTML/CSS. Uses the
+# standard-library html.parser to catch unclosed/mismatched tags, and a
+# simple brace-balance count for CSS. This is deliberately conservative (not
+# a full HTML5 validator) — its job is only to catch the kind of gross
+# structural error that silently produces a broken/unstyled page, which
+# would otherwise only surface several expensive steps later as a vague
+# "layout looks off" finding from the vision-based ui_reviewer.
+# ---------------------------------------------------------------------------
+def validate_markup_and_css(file_code: dict[str, str]) -> List[str]:
+    from html.parser import HTMLParser
+
+    findings: List[str] = []
+    void_tags = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    class _StructureChecker(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack: List[str] = []
+            self.errors: List[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in void_tags:
+                self.stack.append(tag)
+
+        def handle_startendtag(self, tag, attrs):
+            pass  # self-closed tag (e.g. <br/>) — nothing to push
+
+        def handle_endtag(self, tag):
+            if tag in void_tags:
+                return
+            if not self.stack:
+                self.errors.append(f"stray closing tag </{tag}> with no open tag")
+                return
+            if self.stack[-1] == tag:
+                self.stack.pop()
+                return
+            if tag in self.stack:
+                # Unwind mismatched tags until we find the real match — this is a
+                # best-effort recovery, not a claim about which tag is "correct."
+                self.errors.append(f"mismatched closing tag </{tag}> (top of stack was <{self.stack[-1]}>)")
+                while self.stack and self.stack[-1] != tag:
+                    self.stack.pop()
+                if self.stack:
+                    self.stack.pop()
+            else:
+                self.errors.append(f"closing tag </{tag}> has no corresponding open tag")
+
+    for fname, content in file_code.items():
+        if fname.endswith((".html", ".htm")):
+            checker = _StructureChecker()
+            try:
+                checker.feed(content)
+            except Exception as e:
+                findings.append(f"{fname}: HTML failed to parse — {e}")
+                continue
+            if checker.errors:
+                findings.append(
+                    f"{fname}: possible malformed HTML structure — " + "; ".join(checker.errors[:3])
+                )
+            if checker.stack:
+                unclosed = ", ".join(checker.stack[:5])
+                findings.append(f"{fname}: {len(checker.stack)} tag(s) left unclosed at end of document: {unclosed}")
+
+        if fname.endswith(".css"):
+            opens, closes = content.count("{"), content.count("}")
+            if opens != closes:
+                findings.append(
+                    f"{fname}: unbalanced CSS braces ({opens} '{{' vs {closes} '}}') — "
+                    f"this is very likely a syntax error that will break styling for everything "
+                    f"after the imbalance."
+                )
+
+    return findings
+
+
 def static_analyzer(state: State) -> State:
-    """Runs detect_common_bugs over the just-(re)generated file_code. Placed after
-    both code_generator and patch_generator (both feed into writer), so every
-    pass — first generation and every patch — gets re-checked before deploy."""
-    findings = detect_common_bugs(state.get('file_code', {}))
+    """Runs the full deterministic static-analysis suite over the just-(re)generated
+    file_code. Placed after both code_generator (via code_reviewer) and
+    patch_generator, so every pass — first generation and every patch — gets
+    re-checked before deploy. Combines: broken asset links / literal undefined
+    text / missing alt text / dead links / missing viewport meta (all from
+    detect_common_bugs), WCAG contrast ratio checks against design_system.colors,
+    Google Font load verification against design_system.typography, CSS custom
+    property reuse checks, and lightweight HTML/CSS syntax validation."""
+    file_code = state.get('file_code', {})
+    design_system = state.get('design_system')
+
+    findings = detect_common_bugs(file_code)
+    if design_system:
+        findings += check_color_contrast(design_system.colors)
+        findings += check_font_loading(design_system, file_code)
+    findings += check_css_variable_usage(file_code)
+    findings += validate_markup_and_css(file_code)
+
     if findings:
         print(f"static_analyzer_found: {len(findings)} issue(s)")
         for f in findings:
@@ -1474,10 +1726,6 @@ interaction_summary: {interaction_summary}""",
             f"{len(response.files) - len(valid_files)} entries had an empty/blank filename"
         )
 
-    # FIX (companion to the schema change above): backfill any file whose
-    # `language` came back empty, inferred from its extension, falling back to
-    # the plan's overall `language` field. Keeps code_generator's prompt
-    # context meaningful even when the model skips this field.
     for f in valid_files:
         if not f.language or not f.language.strip():
             inferred = infer_language(f.filename, fallback=response.language)
@@ -1489,7 +1737,54 @@ interaction_summary: {interaction_summary}""",
     return {'fileplans': response}
 
 
+# ---------------------------------------------------------------------------
+# NEW: compact "style manifest" — a short, quick-reference cheat sheet built
+# once per run from design_system + design_direction, instead of relying
+# purely on the two large formatted summary blocks being re-included verbatim
+# in every single per-file code_generator/code_reviewer call. The full
+# summaries are still included below it (needed for exact hex/spacing
+# fidelity), but this short block goes first so the coding_model's attention
+# lands on the handful of details that matter most (primary/accent colors,
+# type pairing, spacing base, radius, and — critically — the signature
+# element) before it has to wade through the longer reference blocks.
+# ---------------------------------------------------------------------------
+def build_style_manifest(design_system: "DesignSystemSpec | None", design_direction: "DesignDirection | None") -> str:
+    lines: List[str] = []
+    if design_system:
+        primary_colors = design_system.colors[:4]
+        color_bits = ", ".join(f"{c.name}={c.value}" for c in primary_colors)
+        type_bits = ", ".join(f"{t.role}={t.font}/{t.weight}/{t.size}" for t in design_system.typography[:3])
+        lines.append(f"Key colors: {color_bits}")
+        lines.append(f"Key type: {type_bits}")
+        lines.append(f"Spacing base: {design_system.spacing_scale}")
+        lines.append(f"Radius: {design_system.border_radius}")
+    if design_direction:
+        lines.append(f"Signature element (must be present and well-executed): {design_direction.signature_element}")
+        lines.append(f"Copy voice: {design_direction.copy_voice}")
+        lines.append(f"Avoid: {design_direction.avoided_cliches}")
+    if not lines:
+        return "No design tokens available yet — use standard, sensible conventions."
+    return "\n".join(f"- {line}" for line in lines)
+
+
 CODE_GEN_TEMPLATE = """You are an expert software engineer generating one file at a time as part of a larger multi-file project.
+---
+CORE RULES (highest priority — read these first, they matter more than anything below):
+A. Generate code ONLY for the requested file. Stay strictly within its responsibilities.
+B. Never let rendered output show literal "undefined", "null", or "NaN" — guard any value that
+   might be missing (e.g. `value ?? ''`) instead of interpolating it raw.
+C. Every <link href="..."> / <script src="..."> in an HTML file MUST exactly match a filename
+   the blueprint lists as being generated — never reference a file that doesn't exist.
+D. Use design_system's exact token values (colors, fonts, spacing, radius) — never invent a new
+   raw value when a token already covers it. If this file defines shared CSS custom properties,
+   define each token ONCE in :root and have every value elsewhere reference var(--token-name).
+E. If this file renders visible text and copy_voice is specified, match it exactly — no generic
+   filler like "Welcome to our platform."
+F. Your response must be ONLY raw code — no markdown fences, no language name, no commentary. The
+   first character must be actual code.
+---
+style_manifest (quick-reference cheat sheet — see full blocks below for exact values): {style_manifest}
+---
 This is the already generated code of files this one depends on — if empty, do not consider it: {code}
 Analyse the blueprint: {blueprint}
 ---
@@ -1511,9 +1806,7 @@ execution sandbox. Treat this as a BUG FIX pass, not a fresh generation:
    doesn't reference anything not defined here or in a dependency).
 4. Do not silently drop functionality to avoid the error — fix the actual cause.
 ---
-Your ONLY job is to generate the complete, correct code for THIS ONE FILE.
----
-RULES:
+REFERENCE RULES (detailed — consult as needed; CORE RULES above take precedence in any conflict):
 1. Generate code only for the file you are asked to generate. Do not generate or repeat
    code for any other file.
 2. Stay strictly within the responsibilities given for this file. Do not add logic that
@@ -1553,6 +1846,13 @@ ASSET-LINKING RULE:
      "File:" lines). Never reference a stylesheet/script filename that the blueprint does not
      also list as a file being generated — a broken reference here means the page silently
      loses all styling/behavior.
+---
+ACCESSIBILITY RULE:
+10d. Every <img> tag must have a meaningful alt attribute. Every <a> tag must have a real
+     destination — never leave href="" or href="#" for a link that's meant to go somewhere;
+     use a real anchor id, route, or, for genuine no-op placeholders, a clearly commented
+     JS-driven handler instead of a bare "#". Include a <meta name="viewport"
+     content="width=device-width, initial-scale=1"> in the <head> of any HTML file that has one.
 ---
 USING research_context (when provided and non-empty):
 11. Use research_context only to inform CONTENT and STRUCTURE fidelity for this specific
@@ -1597,24 +1897,28 @@ USING design_system (when provided and non-empty):
     the dependency code provided above for what those names actually are.
 25. If design_system is empty, fall back to design_direction, then design_schema, then standard
     convention.
+26. If design_system specifies a Google Font (a font name that isn't a system-safe stack), you
+    MUST actually load it — add the appropriate <link href="https://fonts.googleapis.com/..."> in
+    the HTML <head>, or an @import at the top of the relevant CSS file. Naming a font without
+    loading it is a defect that gets caught and sent back for patching.
 ---
 USING design_direction (when provided and non-empty):
-26. design_direction is the creative signature layered on top of design_system's tokens — which
+27. design_direction is the creative signature layered on top of design_system's tokens — which
     combination to foreground and the one memorable signature_element. If this file's
     responsibilities call out the signature_element, implement it as the single most deliberate,
     polished piece of this file — spend extra care here specifically (spacing, motion, detail).
-27. Wherever this file writes its own visible text (headings, labels, button text, empty states,
+28. Wherever this file writes its own visible text (headings, labels, button text, empty states,
     error messages), match copy_voice exactly — specific and active, never generic marketing filler
     like "Welcome to our platform" or "Get started today."
-28. design_schema governs exact structural extraction from a reference image; design_direction
+29. design_schema governs exact structural extraction from a reference image; design_direction
     governs creative signature. If design_schema's extracted colors/fonts conflict with
     design_system/design_direction, design_schema wins for that specific component, but stay within
     the established identity for anything design_schema doesn't explicitly specify.
-29. If design_direction is empty, ignore it and fall back to design_system/design_schema, then to
+30. If design_direction is empty, ignore it and fall back to design_system/design_schema, then to
     standard, sensible, internally-consistent convention.
 ---
 CRITICAL OUTPUT FORMAT REQUIREMENT:
-30. Your response must contain ONLY raw code.
+31. Your response must contain ONLY raw code.
     Do NOT wrap the code in markdown code fences (no ``` at the start or end).
     Do NOT write the language name as the first line.
     Do NOT include any explanation before or after the code.
@@ -1641,6 +1945,9 @@ def code_generator(state: State) -> State:
     - pulls the previous execution_result's stderr (if this is a retry pass
       after a failed sandbox run) and feeds it into the prompt so the model is
       patching a known bug instead of blindly regenerating from scratch.
+    - builds a compact style_manifest ONCE per run (not per file) so every
+      per-file call gets a short priority cheat-sheet ahead of the full
+      reference blocks.
     KNOWN LIMITATION (left as-is, flagging for visibility): on a sandbox failure
     this still regenerates every file, not just the one implicated by stderr.
     Splitting that out safely needs error->filename attribution logic first;
@@ -1657,6 +1964,7 @@ def code_generator(state: State) -> State:
     ])
     design_direction_ctx = state.get('design_direction_summary', "No design direction was generated.")
     design_system_ctx = state.get('design_system_summary', "No design system was generated.")
+    style_manifest = build_style_manifest(state.get('design_system'), state.get('design_direction'))
     execution_result = state.get('execution_result')
     previous_error_ctx = ""
     if execution_result and execution_result.status == "failed" and execution_result.stderr:
@@ -1670,12 +1978,11 @@ def code_generator(state: State) -> State:
         input_variables=[
             'blueprint', 'file', 'description', 'responsibilities',
             'depends_on', 'package', 'research_context', 'image_description',
-            'design_system', 'design_direction', 'code', 'previous_error'
+            'design_system', 'design_direction', 'code', 'previous_error', 'style_manifest'
         ]
     )
     chain = prompt | coding_model | StrOutputParser()
     for f in ordered_files:
-     
         if not f.filename or not f.filename.strip():
             print(f"code_generator_skipping_invalid_entry: empty filename (purpose={f.purpose!r})")
             continue
@@ -1697,12 +2004,107 @@ def code_generator(state: State) -> State:
             'design_direction': design_direction_ctx,
             'code': dep_context,
             'previous_error': previous_error_ctx,
+            'style_manifest': style_manifest,
         })
-      
         code_for_each_file[f.filename] = strip_think_tags(response)
         print(f'code_generator_done: {f.filename}')
     return {'file_code': code_for_each_file}
 
+
+# ---------------------------------------------------------------------------
+# NEW: code_reviewer — a second pass over every freshly-generated file, run
+# once immediately after code_generator and before static_analyzer/execution.
+# This is item #1 from the quality review: a dedicated self-check step that
+# re-reads each file against its own blueprint responsibilities and design
+# tokens, and fixes obvious mismatches BEFORE anything reaches the sandbox —
+# catching a meaningful fraction of defects a single generation pass misses,
+# without waiting for a full execute -> screenshot -> vision-review cycle to
+# find them. If the review call fails for any reason (rate limit, empty
+# response), the original file is kept unchanged rather than losing content.
+# ---------------------------------------------------------------------------
+CODE_REVIEW_TEMPLATE = """You are a meticulous senior code reviewer doing a single self-check pass on
+ONE already-generated file, before it ships to the execution sandbox. Fix real, concrete defects.
+Do NOT rewrite the file for style preference alone, and do NOT change anything that is already
+correct — this is a targeted fix pass, not a rewrite.
+---
+FILE: {filename}
+BLUEPRINT RESPONSIBILITIES THIS FILE MUST SATISFY:
+{responsibilities}
+CURRENT FILE CONTENT:
+{content}
+---
+style_manifest (quick reference): {style_manifest}
+design_system (exact token values this file must respect): {design_system}
+design_direction (creative signature — signature_element must not be diluted): {design_direction}
+---
+CHECK FOR AND FIX, ONLY IF ACTUALLY PRESENT:
+1. Any responsibility listed above that the current content does not actually satisfy.
+2. Raw color/spacing/font values that don't match a design_system token where a token clearly
+   should have been used instead.
+3. Any literal "undefined", "null", or "NaN" that could render on screen — guard the value.
+4. Missing alt text on <img> tags; empty href="" or href="#" placeholder links.
+5. Obvious syntax errors — unclosed HTML tags, unbalanced CSS braces.
+6. A Google Font named in design_system/design_direction that this file should be loading (via
+   <link> or @import) but isn't.
+If the file already correctly satisfies everything above, return it completely UNCHANGED.
+---
+OUTPUT FORMAT: Return ONLY the complete, corrected raw file content. No markdown fences, no
+commentary, no explanation of what you changed. The first character must be actual code."""
+
+
+def code_reviewer(state: State) -> State:
+    plan = state.get('fileplans')
+    file_code = dict(state.get('file_code', {}))
+    if not plan or not file_code:
+        print('code_reviewer_skipped_no_files')
+        return {'file_code': file_code}
+
+    plan_by_filename = {f.filename: f for f in plan.files}
+    style_manifest = build_style_manifest(state.get('design_system'), state.get('design_direction'))
+    design_system_ctx = state.get('design_system_summary', '')
+    design_direction_ctx = state.get('design_direction_summary', '')
+
+    prompt = PromptTemplate(
+        template=CODE_REVIEW_TEMPLATE,
+        input_variables=['filename', 'responsibilities', 'content', 'style_manifest', 'design_system', 'design_direction']
+    )
+    chain = prompt | coding_model | StrOutputParser()
+
+    reviewed: dict[str, str] = {}
+    for filename, content in file_code.items():
+        plan_entry = plan_by_filename.get(filename)
+        responsibilities = (
+            "\n".join(f"- {r}" for r in plan_entry.responsibilities)
+            if plan_entry else "No blueprint entry found for this file — review generally for correctness."
+        )
+        try:
+            response = chain.invoke({
+                'filename': filename,
+                'responsibilities': responsibilities,
+                'content': content,
+                'style_manifest': style_manifest,
+                'design_system': design_system_ctx,
+                'design_direction': design_direction_ctx,
+            })
+            cleaned = strip_think_tags(response)
+            if cleaned.strip():
+                reviewed[filename] = cleaned
+                print(f'code_reviewer_reviewed: {filename}')
+            else:
+                # Empty response from the review pass — keep the original rather
+                # than losing the file's content.
+                print(f'code_reviewer_empty_response_keeping_original: {filename}')
+                reviewed[filename] = content
+        except Exception as e:
+            print(f'code_reviewer_failed_keeping_original: {filename} ({e!r})')
+            reviewed[filename] = content
+
+    return {'file_code': reviewed}
+
+
+# ---------------------------------------------------------------------------
+# Execution layer — detect stack, run in an e2b sandbox, wait until ready
+# ---------------------------------------------------------------------------
 def detect_stack(file_code: dict[str, str]) -> str:
     """Detect stack from what was ACTUALLY generated (file_code), not from what the
     planner intended (fileplans). A planner entry for package.json means nothing if
@@ -1788,16 +2190,6 @@ def execute_project(state: State) -> State:
 
     try:
         for filename, content in file_code.items():
-            # ------------------------------------------------------------------
-            # FIX: third line of defense — never let an empty/blank filename
-            # reach e2b's file-write API. Writing to "/home/user/project/" (no
-            # filename appended) is a directory path, not a file, and e2b
-            # correctly rejects it with a 400
-            # InvalidArgumentException("path is a directory: ..."), which was
-            # crashing execute_project outright and — after retries were
-            # exhausted — also crashing the downstream zip-writing step in
-            # main.py with IsADirectoryError.
-            # ------------------------------------------------------------------
             if not filename or not filename.strip():
                 print("execute_project_skipping_invalid_file: empty filename")
                 continue
@@ -1823,10 +2215,6 @@ def execute_project(state: State) -> State:
         print(f"execute_project_starting_server: {run_cmd}")
         sandbox.commands.run(run_cmd, background=True)
         if not wait_for_ready(sandbox):
-            # Capture what the sandbox actually looks like right before giving
-            # up (last HTTP probe result + whether the server process is even
-            # running) instead of just "Server did not become ready in time" with
-            # no further clue as to why.
             boot_log = ""
             try:
                 boot_log = sandbox.commands.run(
@@ -1869,10 +2257,6 @@ def route_after_execution(state: State) -> str:
     if state['execution_result'].status == "success":
         return "success"
     if state.get('retry_count', 0) >= 2:
-        # The give-up path used to end silently — the caller (run_pipeline /
-        # the FastAPI endpoint) got a dict with execution_result.status="failed"
-        # but nothing in the logs said "we're giving up here", making it look like
-        # the process just stopped. Print the final stderr so it's unmistakable.
         print(f"execute_project_gave_up_after_retries: {state['execution_result'].stderr}")
         return "give_up"
     return "retry"
@@ -1940,7 +2324,6 @@ def _diagnose_playwright_env():
         print("HOME:", os.environ.get("HOME"))
         print("PLAYWRIGHT_BROWSERS_PATH:", os.environ.get("PLAYWRIGHT_BROWSERS_PATH"))
 
-        # Playwright's default cache dir if PLAYWRIGHT_BROWSERS_PATH isn't set
         cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or (Path.home() / ".cache" / "ms-playwright"))
         print("Expected browser cache dir:", cache)
         print("Cache dir exists:", cache.exists())
@@ -1980,10 +2363,6 @@ def capture_screenshots(state: State) -> State:
 
     last_error = None
 
-    # FIX: retry the ENTIRE browser launch, not just page.goto(). Previously
-    # a launch failure (missing executable, missing shared libs) had zero
-    # retry path inside this function — it just went straight to `except` and
-    # returned screenshot_spec=None on the first attempt, every time.
     for launch_attempt in range(3):
         browser = None
         try:
@@ -2024,9 +2403,6 @@ def capture_screenshots(state: State) -> State:
 
                     context.close()
                 finally:
-                    # Always close the browser even if one viewport's capture
-                    # raised partway through — prevents an orphaned browser
-                    # process leaking across retries/requests.
                     try:
                         browser.close()
                     except Exception:
@@ -2039,8 +2415,6 @@ def capture_screenshots(state: State) -> State:
                     tablet=tablet_path,
                     mobile=mobile_path,
                 ),
-                # Clear any stale error from a prior failed attempt now that this
-                # attempt succeeded.
                 "screenshot_error": None,
             }
 
@@ -2049,9 +2423,6 @@ def capture_screenshots(state: State) -> State:
             print(f"screenshot_capture_failed (launch_attempt={launch_attempt + 1}/3)")
             print(traceback.format_exc())
 
-            # Non-transient class of error: no browser executable / missing
-            # shared libs will fail identically on every retry within this
-            # same environment. Don't waste attempts — bail immediately.
             non_transient_markers = (
                 "Executable doesn't exist",
                 "shared libraries",
@@ -2100,9 +2471,6 @@ def route_after_capture_screenshots(state: State) -> str:
             return "compare"
         return "review"
 
-    # Screenshot capture failed. Only worth retrying if there's actually a
-    # live URL to point the browser at — if execute_project itself never
-    # produced one, retrying capture_screenshots is pointless.
     result = state.get('execution_result')
     has_live_url = bool(result and result.status == "success" and result.url)
     retries = state.get('screenshot_retry_count', 0)
@@ -2110,9 +2478,6 @@ def route_after_capture_screenshots(state: State) -> str:
     if has_live_url and retries < MAX_SCREENSHOT_RETRIES:
         return "retry_screenshot"
 
-    # Retries exhausted (or nothing to retry against) — fall through to
-    # ui_reviewer, which will now clearly log this as an infrastructure
-    # failure rather than silently treating it as "nothing to review."
     print(
         f"screenshot_capture_gave_up_after_retries "
         f"(retries={retries}, last_error={state.get('screenshot_error')!r})"
@@ -2151,7 +2516,9 @@ original user request (for grounding — what was actually asked for):
 INSTRUCTIONS
 1. Check color usage, typography, spacing, and border radius against design_system's exact token
    values — flag any visible mismatch (wrong hue, inconsistent spacing, wrong font, etc.).
-2. Check whether the signature_element from design_direction is actually present and well executed.
+2. Check whether the signature_element from design_direction is actually present and well executed
+   — look closely; it is often a small, deliberate detail rather than something that dominates the
+   whole page, so do not dismiss it just because it isn't the first thing you notice.
 3. Check that copy on the page matches copy_voice (no generic filler if the spec asked for specific,
    active-voice copy).
 4. Check that the UX spec's key_elements are actually visible for each screen shown, and that
@@ -2189,13 +2556,6 @@ Return ONLY a valid JSON object matching exactly this schema:
 def ui_reviewer(state: State) -> State:
     spec = state.get('screenshot_spec')
     if not spec:
-        # This branch is reached ONLY after MAX_SCREENSHOT_RETRIES genuine
-        # retries (see route_after_capture_screenshots), so it's a confirmed,
-        # persistent infrastructure failure, not a first-attempt blip. Make
-        # that loud in both the log line and the summary text, and carry the
-        # actual exception message through, instead of a generic message that
-        # looks identical whether the site itself was broken or the review
-        # tooling was.
         screenshot_error = state.get('screenshot_error')
         retries_used = state.get('screenshot_retry_count', 0)
         summary = (
@@ -2231,7 +2591,36 @@ def ui_reviewer(state: State) -> State:
             content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
     message = HumanMessage(content=content)
     structured_model = model.with_structured_output(UIReviewResult)
-    result = structured_model.invoke([message])
+
+    # NOTE: full pixel-accurate cropping of the signature_element (requiring
+    # coordinate estimation and an image library) is not implemented here to
+    # keep this dependency-free; instead the prompt above explicitly instructs
+    # the reviewer to look closely rather than dismiss a small signature
+    # detail — a lighter-weight mitigation for the same underlying problem.
+    result = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            result = structured_model.invoke([message])
+            if result is not None:
+                break
+            print(f"ui_reviewer_got_none_result (attempt {attempt + 1}/2) — retrying")
+        except Exception as e:
+            last_err = e
+            print(f"ui_reviewer_invoke_exception (attempt {attempt + 1}/2): {e!r}")
+
+    if result is None:
+        print(f"ui_reviewer_giving_up_after_retries last_err={last_err!r}")
+        result = UIReviewResult(
+            quality_score=0,
+            summary=(
+                "The UI review model returned no usable result (possibly blocked by content "
+                f"safety filtering, or a malformed response). Last error: {last_err!r}. "
+                "Ship status is UNVERIFIED."
+            ),
+            issues=[],
+            meets_bar=False,
+        )
 
     static_findings = state.get('static_check_findings') or []
     if static_findings:
@@ -2243,7 +2632,8 @@ def ui_reviewer(state: State) -> State:
                 location="site-wide (detected via source inspection, not screenshot)",
                 description=finding,
                 expected="No literal undefined/null/NaN text; every <link>/<script> reference must "
-                         "resolve to an actually-generated file.",
+                         "resolve to an actually-generated file; colors must meet WCAG contrast; "
+                         "named webfonts must actually be loaded.",
                 observed=finding,
                 affected_viewport=["desktop", "tablet", "mobile"],
             )
@@ -2256,8 +2646,9 @@ def ui_reviewer(state: State) -> State:
         result.summary = (
             result.summary
             + " Additionally, automated source inspection found "
-            + f"{len(static_findings)} deterministic defect(s) (broken asset links and/or "
-              "literal undefined/null/NaN text) that must be patched."
+            + f"{len(static_findings)} deterministic defect(s) (broken asset links, contrast "
+              "failures, unloaded fonts, accessibility gaps, and/or literal undefined/null/NaN "
+              "text) that must be patched."
         )
 
     print(f'ui_review_done score={result.quality_score} meets_bar={result.meets_bar} issues={len(result.issues)}')
@@ -2268,11 +2659,6 @@ def route_after_ui_review(state: State) -> str:
     review = state.get('review_result')
     retries = state.get('ui_review_retry_count', 0)
 
-    # If screenshots never succeeded (screenshot_spec is still None at this
-    # point — i.e. every retry in route_after_capture_screenshots was
-    # exhausted), there is nothing a code patch can fix: the problem is the
-    # review tooling's environment, not the generated site. Log it loudly and
-    # end — but critically, do NOT let this look like a normal "done" pass.
     if state.get('screenshot_error') and not state.get('screenshot_spec'):
         print(
             "route_after_ui_review: ENDING due to unresolved screenshot "
@@ -2283,7 +2669,7 @@ def route_after_ui_review(state: State) -> str:
 
     if review and review.meets_bar:
         return "done"
-    if retries >= 3:
+    if retries >= MAX_UI_REVIEW_RETRIES:
         return "done"
     if not review or not review.issues:
         return "done"
@@ -2305,6 +2691,7 @@ FILES THAT EXIST IN THIS PROJECT (only reference these — never invent a new fi
 {files}
 design_system (token ground truth): {design_system_summary}
 design_direction (creative signature): {design_direction_summary}
+signature_element (PROTECTED — see rule 8 below): {signature_element}
 ---
 INSTRUCTIONS
 1. For every issue, decide which existing file is responsible for the fix (e.g. a color/spacing
@@ -2316,7 +2703,9 @@ INSTRUCTIONS
    reference, patch the HTML file to point at the correct existing filename (or patch the missing
    file's name to match, whichever is the smaller, safer change); for a literal undefined/null/NaN
    string, patch whichever file actually does the data binding to guard the missing value instead
-   of interpolating it raw. Treat these with the same priority as any other critical issue.
+   of interpolating it raw; for a low-contrast color pair, patch the CSS/tokens file to adjust the
+   offending color to meet 4.5:1; for an unloaded font, add the missing <link>/@import. Treat these
+   with the same priority as any other critical issue.
 3. Group multiple issues that touch the same file into one PatchItem's change_description if they're
    related, but keep unrelated fixes to the same file as separate PatchItem entries so the reasoning
    stays traceable.
@@ -2327,6 +2716,10 @@ INSTRUCTIONS
 6. Do not propose a patch for a minor issue if fixing it risks destabilizing something already
    working, unless it's trivial and low-risk.
 7. Ignore issues you cannot map to any existing file.
+8. PROTECTED SIGNATURE ELEMENT: signature_element above is this product's one memorable visual
+   detail. If any patch touches the file/section that implements it, the change_description MUST
+   explicitly state that the signature element is being preserved or strengthened, never simplified
+   away or removed as a side effect of an unrelated fix.
 ---
 OUTPUT FORMAT
 Return ONLY a valid JSON object matching exactly this schema:
@@ -2354,19 +2747,19 @@ def patch_planner(state: State) -> State:
         files_ctx = "\n".join(f"- {f.filename} ({f.language}): {f.purpose}" for f in plan.files)
     else:
         files_ctx = "\n".join(f"- {fn}" for fn in file_code.keys())
+    design_direction = state.get('design_direction')
+    signature_element = design_direction.signature_element if design_direction else "Not specified."
     prompt = PromptTemplate(template=PATCH_PLANNER_TEMPLATE, input_variables=[
-        'issues', 'files', 'design_system_summary', 'design_direction_summary'
+        'issues', 'files', 'design_system_summary', 'design_direction_summary', 'signature_element'
     ])
     struct_model = groq_model.with_structured_output(PatchPlan)
     chain = prompt | struct_model
-    # FIX: same defensive retry as planner(), now via the shared rate-limit-aware
-    # helper — a structured-output call to Groq can still fail its tool-schema
-    # validation, or simply get rate-limited, and neither should kill the pipeline.
     response = invoke_structured_with_retry(chain, {
         'issues': issues_ctx,
         'files': files_ctx,
         'design_system_summary': state.get('design_system_summary', ''),
         'design_direction_summary': state.get('design_direction_summary', ''),
+        'signature_element': signature_element,
     }, node_name='patch_planner', max_attempts=3)
     print(f'patch_planner_done patches={len(response.patches)}')
     return {'patch_plan': response}
@@ -2401,7 +2794,9 @@ RULES
    undefined/null/NaN string, make sure the corrected reference exactly matches a real filename,
    and guard any interpolated value that could be missing (e.g. `value ?? ''`) rather than leaving
    it able to render as literal "undefined"/"null"/"NaN" text again.
-6. Your response must contain ONLY the complete, updated raw file content.
+6. If a change description states the signature element must be preserved or strengthened, do not
+   let any other part of this patch simplify, shrink, or remove it.
+7. Your response must contain ONLY the complete, updated raw file content.
    Do NOT wrap it in markdown code fences. Do NOT add commentary. The first character of your
    response must be actual code.
 """
@@ -2426,10 +2821,6 @@ def patch_generator(state: State) -> State:
     if not patch_plan or not patch_plan.patches:
         print('patch_generator_skipped_no_patches')
         return {'file_code': file_code}
-    # Snapshot file_code BEFORE any patch is applied. screenshot_comparator judges
-    # the resulting AFTER screenshots against this BEFORE state; if the patch pass
-    # turns out to be a regression, regression_guard uses this snapshot to roll
-    # back instead of silently keeping a worse build.
     pre_patch_snapshot = dict(file_code)
     patches_by_file: dict[str, list[PatchItem]] = {}
     for p in patch_plan.patches:
@@ -2455,14 +2846,11 @@ def patch_generator(state: State) -> State:
             'design_system': state.get('design_system_summary', ''),
             'design_direction': state.get('design_direction_summary', ''),
         })
-        # Same reasoning-trace / stray-fence stripping as code_generator.
         file_code[filename] = strip_think_tags(response)
         print(f'patched_file: {filename}')
     return {
         'file_code': file_code,
         'pre_patch_file_code': pre_patch_snapshot,
-        # FIX: carry the pre-patch screenshot forward as the "before" for the
-        # comparator, and give the next capture round a clean retry budget.
         'previous_screenshot_spec': state.get('screenshot_spec'),
         'screenshot_retry_count': 0,
     }
@@ -2534,16 +2922,9 @@ def screenshot_comparator(state: State) -> State:
 def regression_guard(state: State) -> State:
     """DISABLED (per user request): previously reverted file_code to the
     pre-patch snapshot whenever screenshot_comparator judged a patch pass as
-    a regression (improved=False). That was masking the patch loop's real
-    behavior — the user wants to see what the patch loop actually produces
-    across all passes, unreverted, even if a given pass makes things worse,
-    so they can evaluate the pipeline's real output quality instead of a
-    silently rolled-back version.
-
-    Kept as a no-op pass-through node (rather than deleting it from the
-    graph) so comparison_result is still computed and logged for visibility
-    upstream in screenshot_comparator — it's just no longer acted upon here.
-    """
+    a regression (improved=False). Kept as a no-op pass-through node so
+    comparison_result is still computed and logged for visibility upstream in
+    screenshot_comparator — it's just no longer acted upon here."""
     comp = state.get('comparison_result')
     if comp and not comp.improved:
         print(
@@ -2564,6 +2945,7 @@ graph = StateGraph(State)
 graph.add_node('query_optimizer', query_optimizer)
 graph.add_node('planner', planner)
 graph.add_node('code_generator', code_generator)
+graph.add_node('code_reviewer', code_reviewer)
 graph.add_node('call_researchor_or_not', call_researchor_or_not)
 graph.add_node('checker', checker)
 graph.add_node('get_image_schema', get_image_schema)
@@ -2611,7 +2993,10 @@ graph.add_edge('format_interaction_spec', 'design_direction')
 graph.add_edge('design_direction', 'format_design_direction')
 graph.add_edge('format_design_direction', 'planner')
 graph.add_edge('planner', 'code_generator')
-graph.add_edge('code_generator', 'static_analyzer')
+# NEW: code_reviewer runs as a second pass immediately after generation,
+# before static_analyzer/execution — see code_reviewer() docstring above.
+graph.add_edge('code_generator', 'code_reviewer')
+graph.add_edge('code_reviewer', 'static_analyzer')
 graph.add_edge('static_analyzer', 'execute_project')
 graph.add_conditional_edges(
     'execute_project',
@@ -2635,9 +3020,6 @@ graph.add_conditional_edges(
 )
 graph.add_edge('bump_screenshot_retry', 'capture_screenshots')
 graph.add_edge('screenshot_comparator', 'regression_guard')
-# regression_guard -> (regression found -> revert file_code, redeploy through
-# static_analyzer/writer/execute_project/capture_screenshots so the live URL matches
-# the reverted code, then route_after_capture_screenshots sends it to END | otherwise -> ui_reviewer as before)
 graph.add_conditional_edges(
     'regression_guard',
     route_after_regression_guard,
@@ -2646,8 +3028,6 @@ graph.add_conditional_edges(
         "review": 'ui_reviewer',
     }
 )
-# ui_reviewer -> (meets_bar / no issues / retries exhausted / unresolved screenshot
-# infra failure -> END, loudly logged either way | otherwise -> patch loop)
 graph.add_conditional_edges(
     'ui_reviewer',
     route_after_ui_review,
@@ -2657,8 +3037,11 @@ graph.add_conditional_edges(
     }
 )
 graph.add_edge('patch_planner', 'patch_generator')
-# patch_generator also flows through static_analyzer before writer, so a patch
-# pass is re-checked for broken links / literal undefined text just like a fresh build.
+# patch_generator flows through static_analyzer before execution, so a patch
+# pass is re-checked by the full static-analysis suite just like a fresh
+# build. (Not routed through code_reviewer again, to keep patch-loop cost
+# and latency down — patch_generator's own prompt already carries the same
+# guardrails.)
 graph.add_edge('patch_generator', 'static_analyzer')
 
 workflow = graph.compile()
