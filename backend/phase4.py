@@ -1456,24 +1456,6 @@ interaction_summary: {interaction_summary}""",
     )
     struct_model = groq_model.with_structured_output(all_files)
     chain = prompt | struct_model
-    # ------------------------------------------------------------------
-    # FIX: the actual crash from the logs. `fileplan.language` used to have no
-    # default, which made it a REQUIRED property in the JSON schema sent to
-    # Groq as the `all_files` tool definition. Groq validates a model's tool
-    # call arguments against that schema server-side, before LangChain ever
-    # sees the response — so when the planner model omitted `language` for a
-    # file, Groq rejected the whole tool call with a raw 400 Bad Request. That
-    # exception has nothing to do with LangChain's own retry/parsing logic, so
-    # it was propagating straight out of chain.invoke() and killing the entire
-    # graph.invoke() call with no chance for any of the existing defensive
-    # code (empty-filename filter, static_analyzer, etc.) to run.
-    #
-    # `language` is now optional (default="") in the schema, so Groq can no
-    # longer reject a tool call purely for omitting it. As a second line of
-    # defense, wrap the call in a small retry loop for any remaining
-    # structured-output error, and backfill `language` deterministically from
-    # each file's extension if the model still leaves it blank.
-    # ------------------------------------------------------------------
     response = invoke_structured_with_retry(chain, {
         'query': state['new_request'],
         'research_context': state['research_context'],
@@ -1485,17 +1467,6 @@ interaction_summary: {interaction_summary}""",
         'interaction_summary': state.get('interaction_summary', ''),
     }, node_name='planner', max_attempts=3)
 
-    # ------------------------------------------------------------------
-    # FIX: Groq's small model occasionally emits a `fileplan` entry with an
-    # empty filename ("" is still valid against `filename: str`, so schema
-    # validation doesn't catch it — it's garbage data, not a schema error).
-    # Downstream, execute_project() writes to f"/home/user/project/{filename}",
-    # so an empty filename resolves to "/home/user/project/" — a directory
-    # path, not a file. e2b correctly rejects that with a 400
-    # ("path is a directory"), which crashes the whole sandbox run and, after
-    # retries are exhausted, also corrupts the zip-writing step in main.py.
-    # Filter invalid entries out here, at the source, so they never propagate.
-    # ------------------------------------------------------------------
     valid_files = [f for f in response.files if f.filename and f.filename.strip()]
     if len(valid_files) != len(response.files):
         print(
@@ -1704,12 +1675,7 @@ def code_generator(state: State) -> State:
     )
     chain = prompt | coding_model | StrOutputParser()
     for f in ordered_files:
-        # ------------------------------------------------------------------
-        # FIX: second line of defense against empty-filename plan entries.
-        # planner() now filters these at the source, but this guard stays in
-        # place in case `fileplans` is ever populated by a different code path
-        # that doesn't go through planner()'s filter.
-        # ------------------------------------------------------------------
+     
         if not f.filename or not f.filename.strip():
             print(f"code_generator_skipping_invalid_entry: empty filename (purpose={f.purpose!r})")
             continue
@@ -1732,17 +1698,11 @@ def code_generator(state: State) -> State:
             'code': dep_context,
             'previous_error': previous_error_ctx,
         })
-        # Strip any reasoning-trace / stray markdown fence the coding_model might
-        # emit before the raw code — CODE_GEN_TEMPLATE rule #30 requires the first
-        # character of the file to be actual code, and unstripped output would
-        # otherwise corrupt the written file.
+      
         code_for_each_file[f.filename] = strip_think_tags(response)
         print(f'code_generator_done: {f.filename}')
     return {'file_code': code_for_each_file}
 
-# ---------------------------------------------------------------------------
-# Execution layer — detect stack, run in an e2b sandbox, wait until ready
-# ---------------------------------------------------------------------------
 def detect_stack(file_code: dict[str, str]) -> str:
     """Detect stack from what was ACTUALLY generated (file_code), not from what the
     planner intended (fileplans). A planner entry for package.json means nothing if
@@ -2323,7 +2283,7 @@ def route_after_ui_review(state: State) -> str:
 
     if review and review.meets_bar:
         return "done"
-    if retries >= 7:
+    if retries >= 3:
         return "done"
     if not review or not review.issues:
         return "done"
