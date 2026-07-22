@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import your LangGraph setup and file generation pipeline
 from chat_pipeline_new import build_graph
-from phase3 import run_pipeline
+from phase4 import run_pipeline
 
 # ---------------------------------------------------------------------
 # Logging: full detail goes here (server-side only), never to the client
