@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
-model = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
+model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -339,7 +339,12 @@ class State(TypedDict):
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 
-coding_model = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
+# coding_model: kept on OpenRouter per your requirement, but now env-configurable — see
+# CODING_MODEL_NAME below. openai/gpt-oss-20b:free benchmarks competitively for coding among
+# free options, but it's still a small, free, rate-limited model — see strip_think_tags()
+# and detect_common_bugs() below, and the comments on code_generator/patch_generator, for the
+# practical consequences of that choice.
+coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free", temperature=0)
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
 visual languages — not one-off page styles. Your job is to convert a requirement spec and a product's
@@ -1458,7 +1463,12 @@ def component_spec_node(state: State) -> State:
         'screens', 'key_elements', 'colors', 'typography', 'spacing_scale', 'border_radius',
         'icon_style', 'personality', 'design_keywords'
     ])
-    struct_model = groq_model.with_structured_output(ComponentSpec)
+    # FIX: this was groq_model, contradicting the docstring above (which already
+    # explained why that's wrong for this schema) — components: List[ComponentDef]
+    # where ComponentDef nests List[ComponentVariant] and List[ComponentStateSpec].
+    # Same tool_use_failed failure mode as `planner`'s all_files — see that node's
+    # comment for the full explanation.
+    struct_model = model.with_structured_output(ComponentSpec)
     chain = prompt | struct_model
     response = chain.invoke({
         'screens': screens,
@@ -1706,7 +1716,17 @@ interaction_summary: {interaction_summary}""",
             'design_direction_summary', 'ux_summary', 'component_summary', 'interaction_summary'
         ]
     )
-    struct_model = groq_model.with_structured_output(all_files)
+    # NOTE: was groq_model. all_files is a wide object (6 top-level fields) PLUS
+    # a nested files: List[fileplan] where fileplan itself has a list field
+    # (depends_on). Groq's llama-3.3-70b-versatile tool-calling repeatedly loses
+    # the outer object wrapper on schemas this shape — it emits a bare JSON array
+    # (just the files list) instead of the full all_files object, which fails
+    # Groq's own argument validation with a 400 tool_use_failed error. This is a
+    # model-capability limitation, not a transient fault, so retrying with the
+    # same model doesn't help. Gemini (`model`) already handles equally-nested
+    # schemas elsewhere in this pipeline (e.g. UIReviewResult, PageSpec), so use
+    # it here too instead of groq_model.
+    struct_model = model.with_structured_output(all_files)
     chain = prompt | struct_model
     response = invoke_structured_with_retry(chain, {
         'query': state['new_request'],
