@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
-model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+model = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -339,12 +339,7 @@ class State(TypedDict):
 
 groq_model = ChatGroq(model="llama-3.3-70b-versatile")
 
-# coding_model: kept on OpenRouter per your requirement, but now env-configurable — see
-# CODING_MODEL_NAME below. openai/gpt-oss-20b:free benchmarks competitively for coding among
-# free options, but it's still a small, free, rate-limited model — see strip_think_tags()
-# and detect_common_bugs() below, and the comments on code_generator/patch_generator, for the
-# practical consequences of that choice.
-coding_model = ChatOpenRouter(model="poolside/laguna-m.1:free", temperature=0)
+coding_model = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
 
 DESIGN_SYSTEM_TEMPLATE = """You are the design systems lead at a studio that builds durable, reusable
 visual languages — not one-off page styles. Your job is to convert a requirement spec and a product's
@@ -1094,9 +1089,14 @@ def get_image_schema(state: State) -> State:
     mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
     message = HumanMessage(content=[
         {"type": "text", "text": "Give me the complete detail of this image — every section, component, text, color, and layout detail, following the schema."},
-        {"type": "image_url", "image_url": f"data:{mime};base64,{image_b64}"}
+        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}}
     ])
-    structured_model = groq_model.with_structured_output(PageSpec)
+    # NOTE: was groq_model — llama-3.3-70b-versatile is text-only and rejects
+    # multimodal `content` payloads with a 400 (see groq.BadRequestError).
+    # `model` (Gemini) is already used for vision elsewhere (ui_reviewer,
+    # screenshot_comparator), so reuse it here instead of adding a second
+    # vision-capable model just for this node.
+    structured_model = model.with_structured_output(PageSpec)
     result = structured_model.invoke([message])
     print('schema_fetched')
     return {'overall_image_design': result}
@@ -2588,7 +2588,7 @@ def ui_reviewer(state: State) -> State:
         b64 = _encode_image(path)
         if b64:
             content.append({"type": "text", "text": f"--- {label} screenshot ---"})
-            content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
     message = HumanMessage(content=content)
     structured_model = model.with_structured_output(UIReviewResult)
 
@@ -2907,7 +2907,7 @@ def screenshot_comparator(state: State) -> State:
         b64 = _encode_image(path)
         if b64:
             content.append({"type": "text", "text": f"--- {label} ---"})
-            content.append({"type": "image_url", "image_url": f"data:image/png;base64,{b64}"})
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
     message = HumanMessage(content=content)
     struct_model = model.with_structured_output(ComparisonResult)
     result = struct_model.invoke([message])
