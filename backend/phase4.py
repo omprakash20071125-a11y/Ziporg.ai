@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright  # screenshot capture
 
 load_dotenv()
 
-model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+model = ChatGoogleGenerativeAI(model="gemini-3.6-flash")
 
 # ---------------------------------------------------------------------------
 # Schemas
