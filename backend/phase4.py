@@ -241,20 +241,12 @@ class fileplan(BaseModel):
     package: str = Field(default="", description="Package needed for this file, if any (empty string if none)")
 
 
-# FIX: previously every top-level field here was required (no default). When the
-# planner LLM's tool-calling output only contained the `files` array (a common
-# failure mode on schemas this deep/nested — see the comment on
-# component_spec_node for the same root cause on a different node), Groq's
-# function-call validator rejected the whole response with a hard 400
-# tool_use_failed error, even though `files` itself was perfectly valid.
-# Giving every other field a sensible default means a partial-but-otherwise-good
-# response is still accepted, instead of the entire planning step failing.
 class all_files(BaseModel):
-    project_type: str = Field(default="", description="e.g. 'static website', 'REST API', 'CLI tool'")
-    language: str = Field(default="", description="Primary language/stack chosen for the project")
-    reasoning: str = Field(default="", description="One or two sentences explaining why this stack was chosen")
-    used_research: bool = Field(default=False, description="Whether research_report informed this plan")
-    used_design_schema: bool = Field(default=False, description="Whether design_schema informed this plan")
+    project_type: str = Field(description="e.g. 'static website', 'REST API', 'CLI tool'")
+    language: str = Field(description="Primary language/stack chosen for the project")
+    reasoning: str = Field(description="One or two sentences explaining why this stack was chosen")
+    used_research: bool = Field(description="Whether research_report informed this plan")
+    used_design_schema: bool = Field(description="Whether design_schema informed this plan")
     packages: List[str] = Field(default_factory=list, description="Packages needed for the whole project")
     files: List[fileplan]
 
@@ -1714,13 +1706,7 @@ interaction_summary: {interaction_summary}""",
             'design_direction_summary', 'ux_summary', 'component_summary', 'interaction_summary'
         ]
     )
-    # FIX: was groq_model (Llama 3.3 70B). all_files/fileplan is a wide,
-    # deeply-nested schema (top-level object + a List[fileplan], where each
-    # fileplan itself has 7 fields) — exactly the shape that made Groq's
-    # tool-calling drop fields on ComponentSpec too (see component_spec_node's
-    # docstring). Swapping to Gemini here for the same reason it was already
-    # swapped there: much more reliable structured-output on deep/wide schemas.
-    struct_model = model.with_structured_output(all_files)
+    struct_model = groq_model.with_structured_output(all_files)
     chain = prompt | struct_model
     response = invoke_structured_with_retry(chain, {
         'query': state['new_request'],
