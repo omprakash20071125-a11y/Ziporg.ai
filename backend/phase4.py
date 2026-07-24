@@ -2960,7 +2960,7 @@ def route_after_regression_guard(state: State) -> str:
         return "redeploy_reverted"
     return "review"
 
-MAX_UI_REVIEW_RETRIES = 2
+MAX_UI_REVIEW_RETRIES = 1
 graph = StateGraph(State)
 graph.add_node('query_optimizer', query_optimizer)
 graph.add_node('planner', planner)
